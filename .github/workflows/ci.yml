@@ -9,7 +9,11 @@ on:
 jobs:
   test:
     name: test
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
@@ -17,4 +21,4 @@ jobs:
           php-version: '8.3'
           extensions: mbstring, openssl
       - run: composer install --no-interaction --no-progress
-      - run: vendor/bin/phpunit
+      - run: php vendor/bin/phpunit
