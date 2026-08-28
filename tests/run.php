@@ -346,6 +346,16 @@ $runner->check(
     'matching payload length parses',
     Owid::fromByteArray(payloadEnvelope(37, $lengthPayload, $lengthSignature))->payload === $lengthPayload
 );
+$largeLengthPayload = str_repeat("\x5A", 1024 * 1024);
+$runner->check(
+    'matching one mebibyte payload parses',
+    Owid::fromByteArray(payloadEnvelope(
+        strlen($largeLengthPayload),
+        $largeLengthPayload,
+        $lengthSignature
+    ))->payload === $largeLengthPayload
+);
+unset($largeLengthPayload);
 $runner->check(
     'empty payload with signature parses',
     Owid::fromByteArray(payloadEnvelope(0, '', $lengthSignature))->payload === ''

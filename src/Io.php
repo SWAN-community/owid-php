@@ -50,11 +50,13 @@ final class Io
      * buffer because each element accessed by offset is a single byte.
      */
     private string $buffer;
+    private int $length;
     private int $position;
 
     public function __construct(string $buffer)
     {
         $this->buffer = $buffer;
+        $this->length = strlen($buffer);
         $this->position = 0;
     }
 
@@ -65,7 +67,7 @@ final class Io
      */
     public function readByte(): int
     {
-        if ($this->position >= strlen($this->buffer)) {
+        if ($this->position >= $this->length) {
             throw OwidException::unexpectedEndOfBuffer();
         }
         $value = ord($this->buffer[$this->position]);
@@ -80,7 +82,7 @@ final class Io
      */
     public function readBytes(int $count): string
     {
-        if ($count < 0 || $this->position + $count > strlen($this->buffer)) {
+        if ($count < 0 || $this->position + $count > $this->length) {
             throw OwidException::unexpectedEndOfBuffer();
         }
         $value = substr($this->buffer, $this->position, $count);
@@ -116,9 +118,12 @@ final class Io
      */
     public function readUint32(): int
     {
-        $bytes = $this->readBytes(4);
+        if ($this->position + 4 > $this->length) {
+            throw OwidException::unexpectedEndOfBuffer();
+        }
         /** @var array{1: int} $unpacked */
-        $unpacked = unpack('V', $bytes);
+        $unpacked = unpack('V', $this->buffer, $this->position);
+        $this->position += 4;
         return $unpacked[1];
     }
 
@@ -153,7 +158,7 @@ final class Io
     public function readPayload(): string
     {
         $count = $this->readUint32();
-        $present = strlen($this->buffer) - $this->position;
+        $present = $this->length - $this->position;
         if ($count + OwidException::SIGNATURE_LENGTH !== $present) {
             throw OwidException::payloadLengthMismatch($count, $present);
         }

@@ -106,6 +106,24 @@ final class PayloadLengthTest extends TestCase
     }
 
     /**
+     * A payload materially larger than an ordinary identifier remains valid
+     * when its declaration and bytes agree. Application policy is separate
+     * from format validity.
+     */
+    public function testMatchingOneMebibytePayloadParses(): void
+    {
+        $payload = str_repeat("\x5A", 1024 * 1024);
+
+        $owid = Owid::fromByteArray(self::envelope(
+            strlen($payload),
+            $payload,
+            self::signature()
+        ));
+
+        $this->assertSame($payload, $owid->payload);
+    }
+
+    /**
      * A round trip through the library's own signing path still parses and
      * verifies, so the check agrees with what the library itself produces.
      */
@@ -177,16 +195,18 @@ final class PayloadLengthTest extends TestCase
     }
 
     /**
-     * A declared length far beyond the bytes present is refused without
+     * A large declaration whose payload bytes are absent is refused without
      * anything sized by the declared number. PHP cannot count allocations
      * per call, so the envelope of a few dozen bytes that declares 64 MiB,
-     * then 2 GiB, then the largest unsigned 32 bit value is parsed 1,000
-     * times each and must finish well inside a second, which a parse that
-     * sized a buffer by the declared length could not do. Where the runtime
+     * then 2 GiB, then the largest unsigned 32 bit value while carrying none
+     * of those bytes is parsed 1,000 times each. The numeric values remain
+     * valid when the matching payload is present. The attempts must finish
+     * well inside a second, which a parse that sized a buffer by the
+     * declaration could not do. Where the runtime
      * can reset its peak memory figure (PHP 8.2 and later) the peak during
      * one refusal must also stay under 64 KiB above the level before it.
      */
-    public function testHugeDeclaredLengthIsRefusedQuickly(): void
+    public function testMismatchedLargeDeclarationIsRefusedQuickly(): void
     {
         $declaredLengths = [64 * 1024 * 1024, 0x7FFFFFFF, 0xFFFFFFFF];
         foreach ($declaredLengths as $declared) {
