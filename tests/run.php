@@ -329,4 +329,56 @@ $runner->check(
     Endpoints::publicKeyPath(Version::Version3) === '/owid/api/v3/public-key'
 );
 
+// Payload length. The declared length is checked against the bytes present
+// before anything is sized by it, and exactly the signature must follow.
+function payloadEnvelope(int $declared, string $payload, string $signature): string
+{
+    $buffer = '';
+    Io::writeByte($buffer, Version::Version3->asByte());
+    Io::writeString($buffer, '51d.es');
+    Io::writeUint32($buffer, 1000);
+    Io::writeUint32($buffer, $declared);
+    return $buffer . $payload . $signature;
+}
+$lengthPayload = str_repeat("\x5A", 37);
+$lengthSignature = str_repeat("\x99", 64);
+$runner->check(
+    'matching payload length parses',
+    Owid::fromByteArray(payloadEnvelope(37, $lengthPayload, $lengthSignature))->payload === $lengthPayload
+);
+$runner->check(
+    'empty payload with signature parses',
+    Owid::fromByteArray(payloadEnvelope(0, '', $lengthSignature))->payload === ''
+);
+foreach ([36, 38] as $declared) {
+    $runner->checkThrows(
+        "payload length $declared off by one refused",
+        fn () => Owid::fromByteArray(payloadEnvelope($declared, $lengthPayload, $lengthSignature))
+    );
+}
+$runner->checkThrows(
+    'trailing byte after signature refused',
+    fn () => Owid::fromByteArray(payloadEnvelope(37, $lengthPayload, $lengthSignature) . "\x00")
+);
+$runner->checkThrows(
+    '63 byte signature refused',
+    fn () => Owid::fromByteArray(payloadEnvelope(37, $lengthPayload, str_repeat("\x99", 63)))
+);
+foreach ([64 * 1024 * 1024, 0x7FFFFFFF, 0xFFFFFFFF] as $declared) {
+    $refused = true;
+    $start = hrtime(true);
+    for ($attempt = 0; $attempt < 1000; $attempt++) {
+        try {
+            Owid::fromByteArray(payloadEnvelope($declared, '', ''));
+            $refused = false;
+        } catch (OwidException $e) {
+        }
+    }
+    $elapsed = (hrtime(true) - $start) / 1e9;
+    $runner->check(
+        "declared length $declared refused 1000 times in under a second",
+        $refused && $elapsed < 1.0
+    );
+}
+
 exit($runner->summary());

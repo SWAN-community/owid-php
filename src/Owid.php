@@ -83,10 +83,13 @@ final class Owid
     }
 
     /**
-     * Creates an OWID from its binary form.
+     * Creates an OWID from its binary form. The declared payload length must
+     * leave exactly the signature after the payload, so a buffer with bytes
+     * missing or bytes after the signature is refused.
      *
-     * @throws OwidException when the version is unknown or the buffer is too
-     *                       short for the remaining fields.
+     * @throws OwidException when the version is unknown, the buffer is too
+     *                       short for the remaining fields, or the declared
+     *                       payload length does not match the bytes present.
      */
     public static function fromByteArray(string $buffer): self
     {
@@ -94,10 +97,13 @@ final class Owid
     }
 
     /**
-     * Creates an OWID by reading the next fields from the reader.
+     * Creates an OWID by reading the next fields from the reader. The reader
+     * must end with the signature, because the declared payload length is
+     * checked against the bytes remaining before the payload is read.
      *
-     * @throws OwidException when the version is unknown or the buffer is too
-     *                       short.
+     * @throws OwidException when the version is unknown, the buffer is too
+     *                       short, or the declared payload length does not
+     *                       match the bytes present.
      */
     public static function fromReader(Io $reader): self
     {
@@ -109,7 +115,7 @@ final class Owid
         }
         $owid->domain = $reader->readString();
         $owid->date = $reader->readDate($version);
-        $owid->payload = $reader->readByteArray();
+        $owid->payload = $reader->readPayload();
         $owid->signature = $reader->readSignature();
         return $owid;
     }

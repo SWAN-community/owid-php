@@ -90,6 +90,23 @@ final class OwidException extends Exception
     }
 
     /**
+     * The declared payload length does not leave exactly the signature after
+     * the payload. The declared value is whatever the sender wrote, so it is
+     * named alongside the bytes that were actually present.
+     */
+    public static function payloadLengthMismatch(
+        int $declared,
+        int $present
+    ): self {
+        $signature = self::SIGNATURE_LENGTH;
+        return new self(
+            "OWID payload length '$declared' does not match the '$present' " .
+            "bytes present, of which the final '$signature' must be the " .
+            "signature"
+        );
+    }
+
+    /**
      * The payload is larger than the unsigned 32 bit length prefix allows.
      */
     public static function payloadTooLarge(int $length): self

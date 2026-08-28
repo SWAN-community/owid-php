@@ -124,13 +124,39 @@ final class Io
 
     /**
      * Reads a byte array prefixed with its length as an unsigned 32 bit
-     * integer.
+     * integer. The count is bounded by the bytes present in readBytes, so
+     * nothing is sized by the declared number alone. The OWID payload is
+     * read with readPayload instead, because the payload must also be
+     * followed by exactly the signature.
      *
      * @throws OwidException when the buffer is too short.
      */
     public function readByteArray(): string
     {
         $count = $this->readUint32();
+        return $this->readBytes($count);
+    }
+
+    /**
+     * Reads the length prefixed payload of an OWID, which must be followed
+     * by the signature and nothing else. The count is whatever the sender
+     * declared, so it is checked against the bytes actually present before
+     * anything is sized by it. The count must equal the bytes remaining
+     * less the signature length, and any other count, short or long, is
+     * refused. A byte after the signature or a signature shorter than 64
+     * bytes therefore fails here rather than being ignored or failing
+     * later.
+     *
+     * @throws OwidException when the declared length does not leave exactly
+     *                       the signature after the payload.
+     */
+    public function readPayload(): string
+    {
+        $count = $this->readUint32();
+        $present = strlen($this->buffer) - $this->position;
+        if ($count + OwidException::SIGNATURE_LENGTH !== $present) {
+            throw OwidException::payloadLengthMismatch($count, $present);
+        }
         return $this->readBytes($count);
     }
 
