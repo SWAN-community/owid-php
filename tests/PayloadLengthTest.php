@@ -84,6 +84,7 @@ final class PayloadLengthTest extends TestCase
         try {
             Owid::fromByteArray($bytes);
         } catch (OwidException $e) {
+            $this->addToAssertionCount(1);
             return $e->getMessage();
         }
         $this->fail("$label should have been refused");
