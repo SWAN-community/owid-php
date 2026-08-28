@@ -90,7 +90,7 @@ final class OwidException extends Exception
     }
 
     /**
-     * The declared payload length does not leave exactly the signature after
+     * The declared payload length does not leave a complete signature after
      * the payload. The declared value is whatever the sender wrote, so it is
      * named alongside the bytes that were actually present.
      */
@@ -100,9 +100,8 @@ final class OwidException extends Exception
     ): self {
         $signature = self::SIGNATURE_LENGTH;
         return new self(
-            "OWID payload length '$declared' does not match the '$present' " .
-            "bytes present, of which the final '$signature' must be the " .
-            "signature"
+            "OWID payload length '$declared' exceeds the '$present' bytes " .
+            "present, which must also contain the '$signature' byte signature"
         );
     }
 

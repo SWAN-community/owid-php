@@ -31,8 +31,8 @@ use SwanCommunity\Owid\Version;
 /**
  * The payload length field of an OWID is whatever the sender declared, so
  * parsing must check it against the bytes present before sizing anything by
- * it. These tests prove that a declared length that does not leave exactly
- * the signature after the payload is refused, that refusing it costs nothing
+ * it. These tests prove that a declared length that does not leave a complete
+ * signature after the payload is refused, that refusing it costs nothing
  * sized by the declared number, and that a correctly sized envelope still
  * parses. The 64 byte signature is the fixed tail every valid OWID ends with.
  */
@@ -142,28 +142,22 @@ final class PayloadLengthTest extends TestCase
 
     /**
      * One more or one fewer than the bytes present is refused, because
-     * either leaves something other than exactly the signature at the end.
-     * The message names the declared length and the bytes present so the
-     * caller can see what the sender got wrong.
+     * either overruns the payload or leaves bytes after the top-level value.
      */
     public function testDeclaredLengthOffByOneIsRefused(): void
     {
-        $present = self::PAYLOAD_LENGTH + self::SIGNATURE_LENGTH;
         $declaredLengths = [self::PAYLOAD_LENGTH - 1, self::PAYLOAD_LENGTH + 1];
         foreach ($declaredLengths as $declared) {
-            $message = $this->refusal(
+            $this->refusal(
                 self::envelope($declared, self::payload(), self::signature()),
                 "declared $declared"
             );
-            $this->assertStringContainsString("'$declared'", $message);
-            $this->assertStringContainsString("'$present'", $message);
         }
     }
 
     /**
-     * A byte after the signature is refused, because the signature must be
-     * the end of the envelope. Before the check the extra byte was ignored.
-     * The message names the bytes present, which include the extra byte.
+     * A byte after the signature is refused because a top-level decoder
+     * requires the signature to end the envelope.
      */
     public function testTrailingByteAfterSignatureIsRefused(): void
     {
@@ -172,9 +166,7 @@ final class PayloadLengthTest extends TestCase
             self::payload(),
             self::signature()
         );
-        $message = $this->refusal($bytes . "\x00", 'trailing byte');
-        $present = self::PAYLOAD_LENGTH + self::SIGNATURE_LENGTH + 1;
-        $this->assertStringContainsString("'$present'", $message);
+        $this->refusal($bytes . "\x00", 'trailing byte');
     }
 
     /**
@@ -246,5 +238,28 @@ final class PayloadLengthTest extends TestCase
         $owid = Owid::fromByteArray(self::envelope(0, '', self::signature()));
         $this->assertSame('', $owid->payload);
         $this->assertSame(self::signature(), $owid->signature);
+    }
+
+    /**
+     * The public reader consumes one OWID and leaves following framed bytes;
+     * the byte-array entry point remains strict about EOF.
+     */
+    public function testFromReaderLeavesFollowingEnvelopeUnread(): void
+    {
+        $firstBytes = self::envelope(
+            self::PAYLOAD_LENGTH,
+            self::payload(),
+            self::signature()
+        );
+        $secondBytes = self::envelope(0, '', self::signature());
+        $reader = new Io($firstBytes . $secondBytes);
+
+        $first = Owid::fromReader($reader);
+        $this->assertSame(self::payload(), $first->payload);
+        $this->assertSame(strlen($secondBytes), $reader->remaining());
+
+        $second = Owid::fromReader($reader);
+        $this->assertSame('', $second->payload);
+        $this->assertSame(0, $reader->remaining());
     }
 }

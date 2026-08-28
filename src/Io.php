@@ -91,6 +91,15 @@ final class Io
     }
 
     /**
+     * Returns the number of unread bytes, so a top-level decoder can require
+     * EOF while a framed reader can deliberately leave following data.
+     */
+    public function remaining(): int
+    {
+        return $this->length - $this->position;
+    }
+
+    /**
      * Reads bytes until the null terminator and returns them as a string. The
      * terminator is consumed but not returned.
      *
@@ -132,7 +141,7 @@ final class Io
      * integer. The count is bounded by the bytes present in readBytes, so
      * nothing is sized by the declared number alone. The OWID payload is
      * read with readPayload instead, because the payload must also be
-     * followed by exactly the signature.
+     * followed by the fixed-length signature.
      *
      * @throws OwidException when the buffer is too short.
      */
@@ -144,22 +153,20 @@ final class Io
 
     /**
      * Reads the length prefixed payload of an OWID, which must be followed
-     * by the signature and nothing else. The count is whatever the sender
+     * by the signature. The count is whatever the sender
      * declared, so it is checked against the bytes actually present before
-     * anything is sized by it. The count must equal the bytes remaining
-     * less the signature length, and any other count, short or long, is
-     * refused. A byte after the signature or a signature shorter than 64
-     * bytes therefore fails here rather than being ignored or failing
-     * later.
+     * anything is sized by it. The count must leave at least the signature;
+     * a public reader consumes one OWID and leaves following framed bytes,
+     * while top-level byte-array parsing separately requires EOF.
      *
-     * @throws OwidException when the declared length does not leave exactly
-     *                       the signature after the payload.
+     * @throws OwidException when the declared length does not leave a
+     *                       complete signature after the payload.
      */
     public function readPayload(): string
     {
         $count = $this->readUint32();
         $present = $this->length - $this->position;
-        if ($count + OwidException::SIGNATURE_LENGTH !== $present) {
+        if ($count + OwidException::SIGNATURE_LENGTH > $present) {
             throw OwidException::payloadLengthMismatch($count, $present);
         }
         return $this->readBytes($count);
