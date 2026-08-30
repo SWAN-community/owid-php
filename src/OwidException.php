@@ -35,6 +35,18 @@ final class OwidException extends Exception
     public const SIGNATURE_LENGTH = 64;
 
     /**
+     * The greatest number of characters an OWID domain can hold. RFC 1035
+     * section 2.3.4, "Size limits", restricts the total length of a domain
+     * name, counting label octets and label length octets, to 255 octets or
+     * less. That 255 is the wire format, which spends one length octet on
+     * every label and one zero octet on the root, whereas OWID stores the
+     * presentation form, the text "example.com", where the dots stand in for
+     * the label length octets and the root has no text at all, so exactly
+     * two of those 255 octets have no character here and the limit is 253.
+     */
+    public const MAXIMUM_DOMAIN_LENGTH = 253;
+
+    /**
      * The version byte is not one supported by this implementation.
      */
     public static function unsupportedVersion(int $version): self
@@ -77,6 +89,22 @@ final class OwidException extends Exception
     public static function invalidDomain(string $domain): self
     {
         return new self("domain '$domain' is not valid");
+    }
+
+    /**
+     * The domain field has no terminator within the greatest number of
+     * characters a domain name can hold, so either the terminator is missing
+     * or the domain is longer than a domain name may be. The bytes are not
+     * named because they are whatever the sender wrote and there may be no
+     * end to them.
+     */
+    public static function domainTooLong(): self
+    {
+        $maximum = self::MAXIMUM_DOMAIN_LENGTH;
+        return new self(
+            "OWID domain has no terminator within the '$maximum' characters " .
+            "a domain name can hold"
+        );
     }
 
     /**

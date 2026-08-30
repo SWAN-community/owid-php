@@ -391,4 +391,93 @@ foreach ([64 * 1024 * 1024, 0x7FFFFFFF, 0xFFFFFFFF] as $declared) {
     );
 }
 
+// Domain length. The zero terminator is whatever the sender wrote, so the
+// search for it stops at the greatest number of characters a domain name can
+// hold rather than running to the end of the buffer.
+function domainOfLength(int $length): string
+{
+    $labels = [];
+    $remaining = $length;
+    while ($remaining > 64) {
+        $labels[] = str_repeat('a', 63);
+        $remaining -= 64;
+    }
+    $labels[] = str_repeat('a', $remaining);
+    return implode('.', $labels);
+}
+function domainEnvelope(string $domain): string
+{
+    $buffer = '';
+    Io::writeByte($buffer, Version::Version3->asByte());
+    Io::writeString($buffer, $domain);
+    Io::writeUint32($buffer, 1000);
+    Io::writeUint32($buffer, 0);
+    return $buffer . str_repeat("\x99", 64);
+}
+$maximumDomain = domainOfLength(OwidException::MAXIMUM_DOMAIN_LENGTH);
+$maximumBytes = domainEnvelope($maximumDomain);
+$maximumOwid = Owid::fromByteArray($maximumBytes);
+$runner->check(
+    'domain of the greatest length parses',
+    $maximumOwid->domain === $maximumDomain
+);
+$runner->check(
+    'domain of the greatest length round trips byte exact',
+    $maximumOwid->asByteArray() === $maximumBytes
+);
+$runner->checkThrows(
+    'domain one character over the greatest length refused',
+    fn () => Owid::fromByteArray(
+        domainEnvelope(domainOfLength(OwidException::MAXIMUM_DOMAIN_LENGTH + 1))
+    )
+);
+$runner->checkThrows(
+    'domain filling the bound with no terminator refused',
+    fn () => Owid::fromByteArray(
+        chr(Version::Version3->asByte()) .
+        str_repeat('a', OwidException::MAXIMUM_DOMAIN_LENGTH)
+    )
+);
+// The cost of a buffer with no terminator is timed over two buffers sixteen
+// times apart, so the result does not depend on how fast the machine is. A
+// search running to the end of the buffer costs sixteen times as much on the
+// larger one, whereas a search stopping at the bound costs the same on both.
+// The small allowance absorbs timer noise, because at the bound both runs
+// take only a few thousandths of a second.
+function timeDomainRefusals(string $bytes, int $attempts, bool &$refused): float
+{
+    $start = hrtime(true);
+    for ($attempt = 0; $attempt < $attempts; $attempt++) {
+        try {
+            Owid::fromByteArray($bytes);
+            $refused = false;
+        } catch (OwidException $e) {
+        }
+    }
+    return (hrtime(true) - $start) / 1e9;
+}
+$versionPrefix = chr(Version::Version3->asByte());
+$smallUnterminated = $versionPrefix . str_repeat('a', 1024 * 1024);
+$largeUnterminated = $versionPrefix . str_repeat('a', 16 * 1024 * 1024);
+$refusedUnterminated = true;
+$smallSeconds = timeDomainRefusals($smallUnterminated, 1000, $refusedUnterminated);
+$largeSeconds = timeDomainRefusals($largeUnterminated, 1000, $refusedUnterminated);
+$runner->check(
+    'unterminated domain refused for a cost that does not grow with the buffer',
+    $refusedUnterminated && $largeSeconds < 4 * $smallSeconds + 0.05
+);
+$runner->check(
+    'unterminated domain refused 1000 times in under a second',
+    $refusedUnterminated && $largeSeconds < 1.0
+);
+unset($smallUnterminated, $largeUnterminated);
+$maximumCrypto = Crypto::new();
+$maximumSigned = (new Creator($maximumDomain, $maximumCrypto))->signString('value');
+$maximumParsed = Owid::fromByteArray($maximumSigned->asByteArray());
+$runner->check(
+    'signed OWID with the greatest length domain parses and verifies',
+    $maximumParsed->domain === $maximumDomain &&
+    $maximumParsed->verifyWithCrypto($maximumCrypto)
+);
+
 exit($runner->summary());

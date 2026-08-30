@@ -101,21 +101,31 @@ final class Io
 
     /**
      * Reads bytes until the null terminator and returns them as a string. The
-     * terminator is consumed but not returned.
+     * terminator is consumed but not returned. The only such string in an
+     * OWID is the creator domain, and the terminator is whatever the sender
+     * wrote, so the search for it stops after the greatest number of
+     * characters a domain name can hold rather than running to the end of the
+     * buffer. A buffer with no terminator therefore costs the bound and not
+     * its own length. strcspn is used because it takes the window as an
+     * argument and so examines no more bytes than the window, whereas strpos
+     * would search the rest of the buffer.
      *
-     * @throws OwidException when no terminator is found.
+     * @throws OwidException when the domain has no terminator within the
+     *                       characters a domain name can hold, or the buffer
+     *                       ends before the terminator.
      */
     public function readString(): string
     {
-        $terminator = strpos($this->buffer, "\0", $this->position);
-        if ($terminator === false) {
+        $maximum = OwidException::MAXIMUM_DOMAIN_LENGTH;
+        $count = strcspn($this->buffer, "\0", $this->position, $maximum + 1);
+        if ($count > $maximum) {
+            throw OwidException::domainTooLong();
+        }
+        $terminator = $this->position + $count;
+        if ($terminator >= $this->length) {
             throw OwidException::unexpectedEndOfBuffer();
         }
-        $value = substr(
-            $this->buffer,
-            $this->position,
-            $terminator - $this->position
-        );
+        $value = substr($this->buffer, $this->position, $count);
         $this->position = $terminator + 1;
         return $value;
     }

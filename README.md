@@ -40,8 +40,8 @@ already obtained, so any HTTP client can supply it.
 
 The OWID wire format stores the payload length as an unsigned 32 bit value,
 so a payload from zero through 4,294,967,295 bytes is structurally valid. The
-format defines no smaller payload limit. The null-terminated domain has no
-separate encoded maximum, so the protocol alone is not an application input
+format defines no smaller payload limit. The null-terminated domain carries no
+length before it either, so the protocol alone is not an application input
 limit for the complete envelope.
 
 This library validates that the declared payload length agrees with the bytes
@@ -49,6 +49,13 @@ present before it extracts the payload. A large declaration without the
 corresponding bytes is malformed and is rejected without allocating the
 declared size. A matching large payload is not malformed merely because it is
 large, and parsing work and memory use scale with the bytes actually present.
+
+The domain is read the same way. Because nothing declares its length, the
+search for its terminator stops at the greatest number of characters a domain
+name can hold, which RFC 1035 section 2.3.4 fixes for the presentation form
+this library stores. A domain with no terminator, or one longer than a domain
+name may be, is rejected for a cost set by that maximum rather than by the
+length of the buffer.
 
 The in-memory APIs remain subject to PHP string, platform, address-space and
 available-memory limits. Applications accepting untrusted OWIDs must choose
