@@ -329,4 +329,245 @@ $runner->check(
     Endpoints::publicKeyPath(Version::Version3) === '/owid/api/v3/public-key'
 );
 
+// Payload length. The declared length is checked against the bytes present
+// before anything is sized by it, and exactly the signature must follow.
+function payloadEnvelope(int $declared, string $payload, string $signature): string
+{
+    $buffer = '';
+    Io::writeByte($buffer, Version::Version3->asByte());
+    Io::writeString($buffer, '51d.es');
+    Io::writeUint32($buffer, 1000);
+    Io::writeUint32($buffer, $declared);
+    return $buffer . $payload . $signature;
+}
+$lengthPayload = str_repeat("\x5A", 37);
+$lengthSignature = str_repeat("\x99", 64);
+$runner->check(
+    'matching payload length parses',
+    Owid::fromByteArray(payloadEnvelope(37, $lengthPayload, $lengthSignature))->payload === $lengthPayload
+);
+$largeLengthPayload = str_repeat("\x5A", 1024 * 1024);
+$runner->check(
+    'matching one mebibyte payload parses',
+    Owid::fromByteArray(payloadEnvelope(
+        strlen($largeLengthPayload),
+        $largeLengthPayload,
+        $lengthSignature
+    ))->payload === $largeLengthPayload
+);
+unset($largeLengthPayload);
+$runner->check(
+    'empty payload with signature parses',
+    Owid::fromByteArray(payloadEnvelope(0, '', $lengthSignature))->payload === ''
+);
+foreach ([36, 38] as $declared) {
+    $runner->checkThrows(
+        "payload length $declared off by one refused",
+        fn () => Owid::fromByteArray(payloadEnvelope($declared, $lengthPayload, $lengthSignature))
+    );
+}
+$runner->checkThrows(
+    'trailing byte after signature refused',
+    fn () => Owid::fromByteArray(payloadEnvelope(37, $lengthPayload, $lengthSignature) . "\x00")
+);
+$runner->checkThrows(
+    '63 byte signature refused',
+    fn () => Owid::fromByteArray(payloadEnvelope(37, $lengthPayload, str_repeat("\x99", 63)))
+);
+foreach ([64 * 1024 * 1024, 0x7FFFFFFF, 0xFFFFFFFF] as $declared) {
+    $refused = true;
+    $start = hrtime(true);
+    for ($attempt = 0; $attempt < 1000; $attempt++) {
+        try {
+            Owid::fromByteArray(payloadEnvelope($declared, '', ''));
+            $refused = false;
+        } catch (OwidException $e) {
+        }
+    }
+    $elapsed = (hrtime(true) - $start) / 1e9;
+    $runner->check(
+        "declared length $declared refused 1000 times in under a second",
+        $refused && $elapsed < 1.0
+    );
+}
+
+// Domain length. The zero terminator is whatever the sender wrote, so the
+// search for it stops at the greatest number of characters a domain name can
+// hold rather than running to the end of the buffer.
+function domainOfLength(int $length): string
+{
+    $labels = [];
+    $remaining = $length;
+    while ($remaining > 64) {
+        $labels[] = str_repeat('a', 63);
+        $remaining -= 64;
+    }
+    $labels[] = str_repeat('a', $remaining);
+    return implode('.', $labels);
+}
+// The domain and its terminator are appended here rather than through
+// Io::writeString because these checks build domains the write side now
+// refuses, and the point of them is what the read side does with such bytes
+// when they arrive from somewhere else.
+function domainEnvelope(string $domain): string
+{
+    $buffer = '';
+    Io::writeByte($buffer, Version::Version3->asByte());
+    $buffer .= $domain . chr(0);
+    Io::writeUint32($buffer, 1000);
+    Io::writeUint32($buffer, 0);
+    return $buffer . str_repeat("\x99", 64);
+}
+$maximumDomain = domainOfLength(OwidException::MAXIMUM_DOMAIN_LENGTH);
+$maximumBytes = domainEnvelope($maximumDomain);
+$maximumOwid = Owid::fromByteArray($maximumBytes);
+$runner->check(
+    'domain of the greatest length parses',
+    $maximumOwid->domain === $maximumDomain
+);
+$runner->check(
+    'domain of the greatest length round trips byte exact',
+    $maximumOwid->asByteArray() === $maximumBytes
+);
+$runner->checkThrows(
+    'domain one character over the greatest length refused',
+    fn () => Owid::fromByteArray(
+        domainEnvelope(domainOfLength(OwidException::MAXIMUM_DOMAIN_LENGTH + 1))
+    )
+);
+$runner->checkThrows(
+    'domain filling the bound with no terminator refused',
+    fn () => Owid::fromByteArray(
+        chr(Version::Version3->asByte()) .
+        str_repeat('a', OwidException::MAXIMUM_DOMAIN_LENGTH)
+    )
+);
+// The cost of a buffer with no terminator is timed over two buffers sixteen
+// times apart, so the result does not depend on how fast the machine is. A
+// search running to the end of the buffer costs sixteen times as much on the
+// larger one, whereas a search stopping at the bound costs the same on both.
+// The small allowance absorbs timer noise, because at the bound both runs
+// take only a few thousandths of a second.
+function timeDomainRefusals(string $bytes, int $attempts, bool &$refused): float
+{
+    $start = hrtime(true);
+    for ($attempt = 0; $attempt < $attempts; $attempt++) {
+        try {
+            Owid::fromByteArray($bytes);
+            $refused = false;
+        } catch (OwidException $e) {
+        }
+    }
+    return (hrtime(true) - $start) / 1e9;
+}
+$versionPrefix = chr(Version::Version3->asByte());
+$smallUnterminated = $versionPrefix . str_repeat('a', 1024 * 1024);
+$largeUnterminated = $versionPrefix . str_repeat('a', 16 * 1024 * 1024);
+$refusedUnterminated = true;
+$smallSeconds = timeDomainRefusals($smallUnterminated, 1000, $refusedUnterminated);
+$largeSeconds = timeDomainRefusals($largeUnterminated, 1000, $refusedUnterminated);
+$runner->check(
+    'unterminated domain refused for a cost that does not grow with the buffer',
+    $refusedUnterminated && $largeSeconds < 4 * $smallSeconds + 0.05
+);
+$runner->check(
+    'unterminated domain refused 1000 times in under a second',
+    $refusedUnterminated && $largeSeconds < 1.0
+);
+unset($smallUnterminated, $largeUnterminated);
+$maximumCrypto = Crypto::new();
+$maximumSigned = (new Creator($maximumDomain, $maximumCrypto))->signString('value');
+$maximumParsed = Owid::fromByteArray($maximumSigned->asByteArray());
+$runner->check(
+    'signed OWID with the greatest length domain parses and verifies',
+    $maximumParsed->domain === $maximumDomain &&
+    $maximumParsed->verifyWithCrypto($maximumCrypto)
+);
+
+// The write is bounded as well, at the creator where the domain is supplied
+// and again in the serialization, so this library cannot produce an OWID it
+// would then refuse to read.
+function domainRefusalNamesMaximum(callable $action): bool
+{
+    try {
+        $action();
+    } catch (OwidException $e) {
+        return str_contains(
+            $e->getMessage(),
+            "'" . OwidException::MAXIMUM_DOMAIN_LENGTH . "'"
+        );
+    }
+    return false;
+}
+$overLongDomain = domainOfLength(OwidException::MAXIMUM_DOMAIN_LENGTH + 1);
+$runner->check(
+    'creator refuses a domain over the greatest length, naming the maximum',
+    domainRefusalNamesMaximum(
+        fn () => new Creator($overLongDomain, $maximumCrypto)
+    )
+);
+$runner->check(
+    'creator from configuration refuses a domain over the greatest length',
+    domainRefusalNamesMaximum(
+        fn () => Creator::fromConfiguration(
+            $overLongDomain,
+            $maximumCrypto->privateKeyPem()
+        )
+    )
+);
+$overLongOwid = new Owid();
+$overLongOwid->domain = $overLongDomain;
+$overLongOwid->payload = 'value';
+$overLongOwid->signature = str_repeat(chr(0x99), 64);
+$runner->check(
+    'serializing a domain over the greatest length is refused',
+    domainRefusalNamesMaximum(fn () => $overLongOwid->asByteArray())
+);
+$runner->check(
+    'building signing data for a domain over the greatest length is refused',
+    domainRefusalNamesMaximum(fn () => $overLongOwid->dataForCrypto())
+);
+$atBoundOwid = new Owid();
+$atBoundOwid->domain = $maximumDomain;
+$atBoundOwid->payload = 'value';
+$atBoundOwid->signature = str_repeat(chr(0x99), 64);
+$runner->check(
+    'serializing a domain of the greatest length parses back unchanged',
+    Owid::fromByteArray($atBoundOwid->asByteArray())->domain === $maximumDomain
+);
+// The creator refuses the domain before it looks at the crypto instance, so
+// an instance that can only verify still gives the domain message and not
+// the key one, and nothing is ever signed with a domain that could not be
+// read back.
+$runner->check(
+    'creator refuses the domain before looking at the crypto instance',
+    domainRefusalNamesMaximum(
+        fn () => new Creator(
+            $overLongDomain,
+            Crypto::newVerifyOnly($maximumCrypto->publicKeyPem())
+        )
+    )
+);
+// A domain arriving on another OWID covered by the signature is refused
+// while the data to sign is being built, which is before the signing key is
+// used, so the signature field is left holding what it held before.
+$otherOwid = new Owid();
+$otherOwid->domain = $overLongDomain;
+$otherOwid->payload = 'other';
+$otherOwid->signature = str_repeat(chr(0x11), 64);
+$targetOwid = new Owid();
+$targetOwid->payload = 'value';
+$targetOwid->signature = str_repeat(chr(0x22), 64);
+$runner->check(
+    'over long domain on another OWID is refused when signing',
+    domainRefusalNamesMaximum(
+        fn () => (new Creator('51d.es', $maximumCrypto))
+            ->signWithOthers($targetOwid, [$otherOwid])
+    )
+);
+$runner->check(
+    'signature is not calculated when the domain is refused',
+    $targetOwid->signature === str_repeat(chr(0x22), 64)
+);
+
 exit($runner->summary());

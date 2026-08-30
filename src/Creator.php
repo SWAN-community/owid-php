@@ -35,15 +35,24 @@ final class Creator
 
     /**
      * Creates a new creator for the domain using the crypto instance for
-     * signing.
+     * signing. The domain is bounded here, at the earliest point the caller
+     * can be told, so a creator configured with a domain longer than a
+     * domain name can hold is refused when the domain is supplied rather
+     * than when an OWID is later serialized. The check comes before the
+     * crypto instance is looked at, so nothing is signed with a domain this
+     * same library would then refuse to read.
      *
-     * @throws OwidException when the domain is empty or whitespace, or the
+     * @throws OwidException when the domain is empty or whitespace, is
+     *                       longer than a domain name can hold, or the
      *                       crypto instance can not sign.
      */
     public function __construct(string $domain, Crypto $crypto)
     {
         if (trim($domain) === '') {
             throw OwidException::invalidDomain($domain);
+        }
+        if (strlen($domain) > OwidException::MAXIMUM_DOMAIN_LENGTH) {
+            throw OwidException::domainTooLong();
         }
         if (!$crypto->canSign()) {
             throw OwidException::keyMissing('generate a signature');
@@ -55,7 +64,8 @@ final class Creator
     /**
      * Creates a new creator from the domain and the private key PEM provided.
      *
-     * @throws OwidException when the domain is empty or whitespace, or the
+     * @throws OwidException when the domain is empty or whitespace, is
+     *                       longer than a domain name can hold, or the
      *                       private key PEM is not valid.
      */
     public static function fromConfiguration(string $domain, string $privatePem): self

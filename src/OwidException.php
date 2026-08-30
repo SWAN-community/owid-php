@@ -35,6 +35,18 @@ final class OwidException extends Exception
     public const SIGNATURE_LENGTH = 64;
 
     /**
+     * The greatest number of characters an OWID domain can hold. RFC 1035
+     * section 2.3.4, "Size limits", restricts the total length of a domain
+     * name, counting label octets and label length octets, to 255 octets or
+     * less. That 255 is the wire format, which spends one length octet on
+     * every label and one zero octet on the root, whereas OWID stores the
+     * presentation form, the text "example.com", where the dots stand in for
+     * the label length octets and the root has no text at all, so exactly
+     * two of those 255 octets have no character here and the limit is 253.
+     */
+    public const MAXIMUM_DOMAIN_LENGTH = 253;
+
+    /**
      * The version byte is not one supported by this implementation.
      */
     public static function unsupportedVersion(int $version): self
@@ -80,12 +92,48 @@ final class OwidException extends Exception
     }
 
     /**
+     * The domain is longer than the greatest number of characters a domain
+     * name can hold. Both halves of the library raise this, so both report
+     * the one condition the one way. On a read the domain field has no
+     * terminator within that many characters, so whatever the field holds
+     * runs past the bound, and on a write the value handed in is longer
+     * than the bound. The domain is not named because on a read the bytes
+     * are whatever the sender wrote and there may be no end to them, and
+     * because writeString cannot tell which of the two routes a value
+     * arrived by.
+     */
+    public static function domainTooLong(): self
+    {
+        $maximum = self::MAXIMUM_DOMAIN_LENGTH;
+        return new self(
+            "OWID domain is longer than the '$maximum' characters a domain " .
+            "name can hold"
+        );
+    }
+
+    /**
      * The date can not be represented in the encoding used by the version.
      */
     public static function dateOutOfRange(): self
     {
         return new self(
             'date can not be stored in the encoding for the OWID version'
+        );
+    }
+
+    /**
+     * The declared payload length does not leave a complete signature after
+     * the payload. The declared value is whatever the sender wrote, so it is
+     * named alongside the bytes that were actually present.
+     */
+    public static function payloadLengthMismatch(
+        int $declared,
+        int $present
+    ): self {
+        $signature = self::SIGNATURE_LENGTH;
+        return new self(
+            "OWID payload length '$declared' exceeds the '$present' bytes " .
+            "present, which must also contain the '$signature' byte signature"
         );
     }
 
