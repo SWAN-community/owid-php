@@ -44,7 +44,7 @@ final class ReadmeTest extends TestCase
         $readme = file_get_contents(__DIR__ . '/../README.md');
         self::assertNotFalse($readme, 'the README should be readable');
         $matches = [];
-        preg_match_all('/```php\n(.*?)```/s', $readme, $matches);
+        preg_match_all('/```php\r?\n(.*?)```/s', $readme, $matches);
         return $matches[1];
     }
 
@@ -81,7 +81,10 @@ final class ReadmeTest extends TestCase
             'require ' . var_export(__DIR__ . '/../vendor/autoload.php', true) . ";\n" .
             implode("\n", $examples) . $checks . "\n";
 
-        $path = tempnam(sys_get_temp_dir(), 'owid-readme-') . '.php';
+        // tempnam makes the file, so both names are removed afterwards
+        // rather than leaving the empty one behind on every run.
+        $reserved = tempnam(sys_get_temp_dir(), 'owid-readme-');
+        $path = $reserved . '.php';
         file_put_contents($path, $script);
         try {
             $output = [];
@@ -103,6 +106,7 @@ final class ReadmeTest extends TestCase
             );
         } finally {
             unlink($path);
+            unlink($reserved);
         }
     }
 }
