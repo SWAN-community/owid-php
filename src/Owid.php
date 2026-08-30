@@ -76,7 +76,9 @@ final class Owid
      *
      * The value may be anything at all, because this is external data and
      * failing to be an OWID is an ordinary outcome. Input with or without the
-     * trailing padding is accepted, as an OWID is carried both ways.
+     * trailing padding is accepted, as an OWID is carried both ways. The
+     * marker for an absent OWID is refused here as it is on the byte array
+     * surface.
      *
      * @param mixed $value the base 64 text, or anything a caller was handed
      */
@@ -109,7 +111,9 @@ final class Owid
      *
      * The buffer must be one whole OWID and nothing else, so bytes after the
      * envelope are refused, because on this surface there is nothing else they
-     * could belong to.
+     * could belong to. The marker for an absent OWID, a single zero byte, is
+     * refused as well, because it carries no signature and only means anything
+     * inside a framed buffer.
      *
      * @param mixed $buffer the raw bytes, or anything a caller was handed
      */
@@ -133,6 +137,11 @@ final class Owid
      * rather than rubbish, and the number of bytes this one occupied is
      * reported as the consumed field of the result so a caller can advance to
      * the next.
+     *
+     * This is the one surface that reports the marker for an absent OWID,
+     * because a frame that holds one is saying an optional OWID is not there,
+     * which a caller walking the frames has to be able to tell from a frame
+     * that is malformed.
      */
     public static function tryFromFrame(string $buffer, int $offset = 0): ParseResult
     {
@@ -163,7 +172,9 @@ final class Owid
         $total = strlen($buffer);
         $at = $offset;
         if ($at >= $total) {
-            return ParseResult::failed(ParseStatus::UnexpectedEnd);
+            // Nothing was supplied, which is not the same as data that
+            // stopped part way through a field.
+            return ParseResult::failed(ParseStatus::MissingInput);
         }
 
         $version = Version::tryFrom(ord($buffer[$at]));
@@ -173,12 +184,17 @@ final class Owid
         $at += 1;
 
         if ($version === Version::Empty) {
-            // The marker for an OWID that is not present is the version byte
-            // and nothing else, so on the exact surface anything after it
-            // belongs to no field. The base date stands in for the creation
-            // date because the marker carries none.
-            if ($exact && $at !== $total) {
-                return ParseResult::failed(ParseStatus::MalformedEnvelope);
+            // The marker for an OWID that is not present carries no domain,
+            // date, payload or signature, so it can never verify, and handing
+            // one to a caller would be the single case of an instance with no
+            // signature reaching calling code, which is what the construction
+            // boundary exists to prevent. A whole buffer holding only the
+            // marker is therefore refused. It remains meaningful inside a
+            // framed buffer, where it stands for an optional OWID that is
+            // absent, so a framed read still reports it and consumes its one
+            // byte.
+            if ($exact) {
+                return ParseResult::failed(ParseStatus::UnsupportedVersion);
             }
             return ParseResult::parsed(
                 new self($version, '', Io::baseDate(), '', ''),
@@ -558,7 +574,7 @@ final class Owid
             // created, so only an other that cannot be encoded reaches this.
             return SignatureStatus::VerificationError;
         }
-        return $crypto->verifySignatureStatus($data, $this->signature);
+        return $crypto->signatureStatus($data, $this->signature);
     }
 
     /**

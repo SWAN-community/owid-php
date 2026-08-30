@@ -190,6 +190,14 @@ and nothing else, so bytes after the envelope are refused. `tryFromFrame` reads
 one OWID from a buffer that may carry more after it and leaves the rest alone,
 because what follows may be the next envelope.
 
+The marker for an OWID that is not present, a single zero byte written by
+`Owid::emptyToBuffer`, is refused by the whole buffer surfaces as
+`ParseStatus::UnsupportedVersion`. It carries no domain, date, payload or
+signature, so it can never verify, and reading one as an OWID would be the one
+way an instance with no signature could reach calling code. It still means
+something inside a framed buffer, where it says an optional OWID is absent, so
+`tryFromFrame` reports it and consumes its one byte.
+
 Reading is not verification. A successfully read OWID is structurally valid and
 nothing more, and whether its signature is genuine is a separate question with
 a separate answer.
@@ -204,7 +212,8 @@ The public classes live in the `SwanCommunity\Owid` namespace.
     report a `ParseResult`.
   - `Owid::tryFromFrame` reads one OWID from a buffer that carries more after
     it, reporting how many bytes it occupied.
-  - `asBase64`, `asByteArray` serialize an OWID.
+  - `asBase64`, `asByteArray` serialize an OWID, and
+    `Owid::emptyToBuffer` writes the marker for one that is not present.
   - `payloadAsString` returns the raw payload bytes, `payloadAsPrintable`
     returns lower case zero padded hexadecimal, `payloadAsBase64` returns the
     padded base 64 form.
@@ -224,7 +233,7 @@ The public classes live in the `SwanCommunity\Owid` namespace.
   - `Crypto::newVerifyOnly` accepts an SPKI public key PEM, and
     `Crypto::tryVerifyOnly` returns null instead of raising when the material
     cannot be read.
-  - `signByteArray`, `verifyByteArray` and `verifySignatureStatus` operate on
+  - `signByteArray`, `verifyByteArray` and `signatureStatus` operate on
     raw bytes.
   - `publicKeyPem`, `privateKeyPem` export the keys as PEM.
 - `Creator` binds a domain to a signing `Crypto`.

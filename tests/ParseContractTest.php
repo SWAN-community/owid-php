@@ -28,6 +28,7 @@ use ReflectionProperty;
 use SwanCommunity\Owid\Creator;
 use SwanCommunity\Owid\Crypto;
 use SwanCommunity\Owid\Owid;
+use SwanCommunity\Owid\ParseResult;
 use SwanCommunity\Owid\ParseStatus;
 use SwanCommunity\Owid\SignatureStatus;
 
@@ -377,11 +378,13 @@ final class ParseContractTest extends TestCase
             $method->getStartLine() - 1,
             $method->getEndLine() - $method->getStartLine() + 1
         ));
-        foreach (['Crypto', 'openssl', 'verify'] as $forbidden) {
-            $this->assertStringNotContainsStringIgnoringCase(
-                $forbidden,
+        // Calls rather than words, so that prose about verification in the
+        // comments does not read as a call to it.
+        foreach (['Crypto::', 'openssl_', '->verify', '::verify'] as $call) {
+            $this->assertStringNotContainsString(
+                $call,
                 $body,
-                "reading must not reach $forbidden"
+                "reading must not reach $call"
             );
         }
     }
@@ -411,6 +414,211 @@ final class ParseContractTest extends TestCase
                 );
             }
         }
+    }
+
+    /**
+     * The marker for an absent OWID cannot be read as a whole buffer. It is
+     * the one instance that carries no signature, so reading one here would
+     * hand calling code exactly what the construction boundary exists to
+     * prevent, and it can never verify because it carries no fields either.
+     * Inside a framed buffer it still means an optional OWID is absent, so a
+     * framed read reports it.
+     */
+    public function testTheAbsentOwidMarkerIsRefusedAsAWholeBuffer(): void
+    {
+        $marker = "\x00";
+
+        foreach (['tryFromByteArray', 'tryFromBase64'] as $method) {
+            $value = $method === 'tryFromBase64' ? base64_encode($marker) : $marker;
+            $result = Owid::$method($value);
+
+            $this->assertFalse($result->ok, "$method should refuse the marker");
+            $this->assertNull($result->owid);
+            $this->assertSame(ParseStatus::UnsupportedVersion, $result->status);
+        }
+
+        $framed = Owid::tryFromFrame(
+            $marker . self::creator()->create('x')->asByteArray()
+        );
+        $this->assertTrue($framed->ok, 'a framed read still reports the marker');
+        $this->assertSame(1, $framed->consumed);
+    }
+
+    /**
+     * A buffer of no bytes is nothing having been supplied rather than data
+     * that stopped part way through a field. Base 64 that is only whitespace
+     * decodes to no bytes at all and is reported the same way.
+     */
+    public function testAZeroLengthBufferIsMissingInput(): void
+    {
+        $this->assertSame(
+            ParseStatus::MissingInput,
+            Owid::tryFromByteArray('')->status
+        );
+        $this->assertSame(
+            ParseStatus::MissingInput,
+            Owid::tryFromBase64("\n\n\n\n")->status,
+            'base 64 that decodes to no bytes supplied nothing'
+        );
+    }
+
+    /**
+     * One example of each reason a read can report, so that the test below can
+     * require every one of them to be either produced here or named as one
+     * this implementation cannot reach.
+     *
+     * @return array<string, callable(): ParseResult>
+     */
+    private function parseStatusExamples(): array
+    {
+        $bytes = self::creator()->create('x')->asByteArray();
+        $unknownVersion = $bytes;
+        $unknownVersion[0] = chr(9);
+        // A domain running past the greatest number of characters a domain
+        // name can hold, with its terminator beyond the bound.
+        $longDomain = chr(3) . str_repeat('a', 254) . "\x00" .
+            str_repeat('b', 80);
+
+        return [
+            ParseStatus::Parsed->value =>
+                fn () => Owid::tryFromByteArray($bytes),
+            ParseStatus::MissingInput->value =>
+                fn () => Owid::tryFromByteArray(''),
+            ParseStatus::InvalidInputType->value =>
+                fn () => Owid::tryFromBase64(['not text']),
+            ParseStatus::InvalidBase64->value =>
+                fn () => Owid::tryFromBase64('not base 64 at all!!'),
+            ParseStatus::UnsupportedVersion->value =>
+                fn () => Owid::tryFromByteArray($unknownVersion),
+            ParseStatus::UnexpectedEnd->value =>
+                fn () => Owid::tryFromByteArray(substr($bytes, 0, 5)),
+            ParseStatus::InvalidDomainEncoding->value =>
+                fn () => Owid::tryFromByteArray($longDomain),
+            ParseStatus::ByteCountMismatch->value =>
+                fn () => Owid::tryFromByteArray($bytes . "\x00"),
+        ];
+    }
+
+    /**
+     * Every reason a read can report is either produced by a test or named as
+     * one this implementation cannot reach, with the reason given on the enum
+     * member itself. A status that is neither fails this test, so a reason
+     * cannot be added and left silently untested.
+     */
+    public function testEveryParseStatusIsReachedOrNamedUnreachable(): void
+    {
+        $unreachable = [
+            ParseStatus::ImplementationCapacityExceeded->value,
+            ParseStatus::MalformedEnvelope->value,
+        ];
+        $examples = $this->parseStatusExamples();
+
+        foreach ($examples as $name => $example) {
+            $result = $example();
+            $this->assertSame(
+                $name,
+                $result->status->value,
+                "the example for $name should report it"
+            );
+            $this->assertSame(
+                $result->status === ParseStatus::Parsed,
+                $result->ok,
+                "$name should agree with whether the read worked"
+            );
+        }
+
+        $this->assertSame(
+            [],
+            array_intersect(array_keys($examples), $unreachable),
+            'a status cannot be both reached and unreachable'
+        );
+        $covered = array_merge(array_keys($examples), $unreachable);
+        sort($covered);
+        $all = array_map(
+            static fn (ParseStatus $status): string => $status->value,
+            ParseStatus::cases()
+        );
+        sort($all);
+        $this->assertSame(
+            $all,
+            $covered,
+            'every parse status needs a test or a reason it cannot be reached'
+        );
+    }
+
+    /**
+     * One example of each outcome of asking whether a signature is genuine.
+     *
+     * @return array<string, callable(): SignatureStatus>
+     */
+    private function signatureStatusExamples(): array
+    {
+        $crypto = Crypto::new();
+        $owid = (new Creator('example.com', $crypto))->create('value');
+        $tampered = $owid->asByteArray();
+        $last = strlen($tampered) - 1;
+        $tampered[$last] = chr(ord($tampered[$last]) ^ 0xFF);
+        // The marker for an absent OWID carries no date, so it cannot be
+        // written into the data a signature covers. Passed as one of the
+        // others it makes the check impossible rather than failed, which is
+        // not the identifier's fault and must not read as one.
+        $marker = Owid::tryFromFrame(
+            "\x00" . $owid->asByteArray()
+        )->owid;
+
+        return [
+            SignatureStatus::SignatureValid->value =>
+                fn () => $owid->signatureStatusWithCrypto($crypto),
+            SignatureStatus::SignatureInvalid->value =>
+                fn () => Owid::tryFromByteArray($tampered)
+                    ->owid->signatureStatusWithCrypto($crypto),
+            SignatureStatus::InvalidSignatureLength->value =>
+                fn () => $crypto->signatureStatus(
+                    'data',
+                    str_repeat("\x00", 63)
+                ),
+            SignatureStatus::InvalidKey->value =>
+                fn () => $owid->signatureStatus('not a pem'),
+            SignatureStatus::VerificationError->value =>
+                fn () => $owid->signatureStatusWithCrypto($crypto, [$marker]),
+        ];
+    }
+
+    /**
+     * Every signature outcome is either produced by a test or named as one
+     * this implementation cannot reach, for the same reason as the parse
+     * statuses above.
+     */
+    public function testEverySignatureStatusIsReachedOrNamedUnreachable(): void
+    {
+        // This library never fetches a key, and it verifies data already held
+        // in memory, so neither of these can arise here.
+        $unreachable = [
+            SignatureStatus::KeyUnavailable->value,
+            SignatureStatus::ImplementationCapacityExceeded->value,
+        ];
+        $examples = $this->signatureStatusExamples();
+
+        foreach ($examples as $name => $example) {
+            $this->assertSame(
+                $name,
+                $example()->value,
+                "the example for $name should report it"
+            );
+        }
+
+        $covered = array_merge(array_keys($examples), $unreachable);
+        sort($covered);
+        $all = array_map(
+            static fn (SignatureStatus $status): string => $status->value,
+            SignatureStatus::cases()
+        );
+        sort($all);
+        $this->assertSame(
+            $all,
+            $covered,
+            'every signature status needs a test or a reason it cannot be reached'
+        );
     }
 
     /**

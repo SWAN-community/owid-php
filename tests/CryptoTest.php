@@ -149,7 +149,7 @@ final class CryptoTest extends TestCase
      * apart from a check that could not be made, so an operational fault is
      * never reported as an attack.
      */
-    public function testVerifySignatureStatusSeparatesTheOutcomes(): void
+    public function testSignatureStatusSeparatesTheOutcomes(): void
     {
         $crypto = Crypto::new();
         $signature = $crypto->signByteArray(self::TEST_PAYLOAD);
@@ -157,15 +157,15 @@ final class CryptoTest extends TestCase
 
         $this->assertSame(
             SignatureStatus::SignatureValid,
-            $verifier->verifySignatureStatus(self::TEST_PAYLOAD, $signature)
+            $verifier->signatureStatus(self::TEST_PAYLOAD, $signature)
         );
         $this->assertSame(
             SignatureStatus::SignatureInvalid,
-            $verifier->verifySignatureStatus('other data', $signature)
+            $verifier->signatureStatus('other data', $signature)
         );
         $this->assertSame(
             SignatureStatus::InvalidSignatureLength,
-            $verifier->verifySignatureStatus(
+            $verifier->signatureStatus(
                 self::TEST_PAYLOAD,
                 substr($signature, 0, 63)
             )

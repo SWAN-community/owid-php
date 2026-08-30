@@ -22,6 +22,8 @@ namespace SwanCommunity\Owid\Tests;
 
 use PHPUnit\Framework\TestCase;
 use SwanCommunity\Owid\ParseStatus;
+use SwanCommunity\Owid\Creator;
+use SwanCommunity\Owid\Crypto;
 use SwanCommunity\Owid\Owid;
 use SwanCommunity\Owid\Version;
 
@@ -109,16 +111,46 @@ final class WireFormatTest extends TestCase
     }
 
     /**
-     * An empty OWID marker is a single zero byte and reads back as the empty
-     * version.
+     * An empty OWID marker is a single zero byte, and a whole buffer holding
+     * one is refused. The marker carries no domain, date, payload or
+     * signature, so it can never verify, and reading one as an OWID would hand
+     * a caller the one kind of instance that has no signature. A framed read
+     * still reports it, because there it says an optional OWID is absent,
+     * which a caller walking the frames has to be able to tell from a frame
+     * that is malformed.
      */
-    public function testEmptyOwidMarker(): void
+    public function testEmptyOwidMarkerIsRefusedAsAWholeBuffer(): void
     {
         $buffer = '';
         Owid::emptyToBuffer($buffer);
         $this->assertSame("\x00", $buffer);
-        $owid = Fixtures::parseBytes($buffer);
-        $this->assertSame(Version::Empty, $owid->version);
+
+        $result = Owid::tryFromByteArray($buffer);
+
+        $this->assertFalse($result->ok);
+        $this->assertNull($result->owid);
+        $this->assertSame(ParseStatus::UnsupportedVersion, $result->status);
+    }
+
+    /**
+     * A framed buffer whose first frame is the marker reports it, consumes its
+     * one byte, and leaves the OWID that follows to be read next.
+     */
+    public function testEmptyOwidMarkerIsReadWhenFramed(): void
+    {
+        $owid = (new Creator('example.com', Crypto::new()))->create('value');
+        $buffer = '';
+        Owid::emptyToBuffer($buffer);
+        $buffer .= $owid->asByteArray();
+
+        $marker = Owid::tryFromFrame($buffer);
+        $this->assertTrue($marker->ok);
+        $this->assertSame(Version::Empty, $marker->owid->version);
+        $this->assertSame(1, $marker->consumed);
+
+        $next = Owid::tryFromFrame($buffer, $marker->consumed);
+        $this->assertTrue($next->ok);
+        $this->assertSame('value', $next->owid->payloadAsString());
     }
 
     /**

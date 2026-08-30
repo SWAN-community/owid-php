@@ -357,7 +357,7 @@ $runner->check('verify via imported public key', $pemVerifier->verifyByteArray('
 $runner->check('verify rejects other data', !$pemVerifier->verifyByteArray('other', $sig));
 $runner->check(
     'a signature of the wrong length is not a signature that does not match',
-    $pemVerifier->verifySignatureStatus('test', str_repeat("\x00", 63)) ===
+    $pemVerifier->signatureStatus('test', str_repeat("\x00", 63)) ===
         SignatureStatus::InvalidSignatureLength
 );
 $runner->checkThrows(
@@ -459,12 +459,31 @@ $runner->checkThrows(
 // Empty marker.
 $buffer = '';
 Owid::emptyToBuffer($buffer);
-$runner->check('empty marker is a single zero byte', $buffer === "\x00");
-$runner->check('empty marker reads as empty version', parseBytes($buffer)->version === Version::Empty);
+$runner->check('empty marker is a single zero byte', $buffer === " ");
+// The marker carries no domain, date, payload or signature, so it can never
+// verify, and reading one as a whole buffer would hand a caller the one kind
+// of instance that has no signature. Inside a framed buffer it still says an
+// optional OWID is absent, so a framed read reports it.
 $runner->checkRefused(
-    'bytes after an empty marker are refused',
-    "\x00x",
-    ParseStatus::MalformedEnvelope
+    'the marker for an absent OWID is refused as a whole buffer',
+    $buffer,
+    ParseStatus::UnsupportedVersion
+);
+$markerFrame = Owid::tryFromFrame($buffer . $signed->asByteArray());
+$runner->check(
+    'the marker for an absent OWID is read when framed',
+    $markerFrame->ok &&
+    $markerFrame->owid->version === Version::Empty &&
+    $markerFrame->consumed === 1
+);
+$runner->check(
+    'a buffer of no bytes is missing input',
+    Owid::tryFromByteArray('')->status === ParseStatus::MissingInput &&
+    Owid::tryFromBase64("
+
+
+
+")->status === ParseStatus::MissingInput
 );
 
 // Creator behaviour.

@@ -181,20 +181,20 @@ final class Crypto
         if (strlen($signature) !== OwidException::SIGNATURE_LENGTH) {
             throw OwidException::invalidSignatureLength(strlen($signature));
         }
-        return $this->verifySignatureStatus($data, $signature) ===
+        return $this->signatureStatus($data, $signature) ===
             SignatureStatus::SignatureValid;
     }
 
     /**
-     * Says whether the signature is valid for the data, and where the question
-     * could not be answered, says that instead.
+     * Says whether the signature is genuine for the data, and where the
+     * question could not be answered, says that instead.
      *
      * A signature of the wrong length, a key this instance does not hold, or a
      * provider failure each leave the signature unjudged, and none of them is
      * reported as SignatureInvalid, which means only that a well formed
      * signature did not match.
      */
-    public function verifySignatureStatus(
+    public function signatureStatus(
         string $data,
         string $signature
     ): SignatureStatus {

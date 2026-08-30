@@ -46,7 +46,11 @@ enum ParseStatus: string
      */
     case Parsed = 'Parsed';
 
-    /** Nothing was supplied to read. */
+    /**
+     * Nothing was supplied to read, whether that is a null, an empty string or
+     * a buffer of no bytes. Kept apart from UnexpectedEnd, which is data that
+     * arrived and stopped part way through a field.
+     */
     case MissingInput = 'MissingInput';
 
     /**
@@ -58,7 +62,13 @@ enum ParseStatus: string
     /** The string is not valid base 64, so there are no bytes to read. */
     case InvalidBase64 = 'InvalidBase64';
 
-    /** The first byte names a version this implementation does not know. */
+    /**
+     * The first byte names a version this implementation does not know, or it
+     * names the marker for an absent OWID where a whole one was expected. The
+     * marker carries no domain, date, payload or signature and so can never
+     * verify, and it means something only inside a framed buffer, where a
+     * framed read reports it rather than refusing it.
+     */
     case UnsupportedVersion = 'UnsupportedVersion';
 
     /**
@@ -98,9 +108,19 @@ enum ParseStatus: string
     case ImplementationCapacityExceeded = 'ImplementationCapacityExceeded';
 
     /**
-     * Malformed in a way none of the above describes, such as bytes after an
-     * empty OWID marker. A fallback for the genuinely unclassified, not a
-     * substitute for naming a failure that is already understood.
+     * Malformed in a way none of the above describes. A fallback for the
+     * genuinely unclassified, not a substitute for naming a failure that is
+     * already understood.
+     *
+     * Unreachable from the surfaces as they stand, and so untested, because
+     * every way an envelope can be wrong is already named. The two places that
+     * report it are guards a correct reader never reaches, being a date the
+     * runtime's calendar cannot express, which the four byte minute count
+     * cannot produce, and bytes left after the payload and signature, which
+     * the byte count check has already made impossible. The second is not dead
+     * code: changing that check to accept a longer buffer makes four tests
+     * fail on this status, so it does catch an arithmetic mistake in the check
+     * above it.
      */
     case MalformedEnvelope = 'MalformedEnvelope';
 }
