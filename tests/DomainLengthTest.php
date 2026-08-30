@@ -67,13 +67,17 @@ final class DomainLengthTest extends TestCase
 
     /**
      * A version 3 envelope carrying the domain given, followed by a date, an
-     * empty payload and the signature.
+     * empty payload and the signature. The domain and its terminator are
+     * appended here rather than through Io::writeString because these tests
+     * build domains the write side now refuses, and the point of them is
+     * what the read side does with such bytes when they arrive from
+     * somewhere else.
      */
     private static function envelope(string $domain): string
     {
         $buffer = '';
         Io::writeByte($buffer, Version::Version3->asByte());
-        Io::writeString($buffer, $domain);
+        $buffer .= $domain . chr(0);
         Io::writeUint32($buffer, 1000);
         Io::writeUint32($buffer, 0);
         return $buffer . str_repeat("\x99", self::SIGNATURE_LENGTH);
@@ -208,6 +212,112 @@ final class DomainLengthTest extends TestCase
             str_repeat('a', OwidException::MAXIMUM_DOMAIN_LENGTH);
 
         $this->refusal($bytes, 'domain filling the bound');
+    }
+
+    /**
+     * A creator is refused a domain one character longer than a domain name
+     * can hold, at the point the domain is supplied, so the caller is told
+     * when the configuration is wrong rather than when an OWID is later
+     * serialized. Both ways of making a creator are covered, and the message
+     * names the maximum.
+     */
+    public function testCreatorRefusesDomainOverMaximum(): void
+    {
+        $domain = self::domain(OwidException::MAXIMUM_DOMAIN_LENGTH + 1);
+        $maximum = OwidException::MAXIMUM_DOMAIN_LENGTH;
+        $crypto = Crypto::new();
+
+        try {
+            new Creator($domain, $crypto);
+            $this->fail('over long creator domain should have been refused');
+        } catch (OwidException $e) {
+            $this->assertStringContainsString("'$maximum'", $e->getMessage());
+        }
+
+        try {
+            Creator::fromConfiguration($domain, $crypto->privateKeyPem());
+            $this->fail('over long configured domain should have been refused');
+        } catch (OwidException $e) {
+            $this->assertStringContainsString("'$maximum'", $e->getMessage());
+        }
+    }
+
+    /**
+     * The serialization refuses the same domain as well, so a value that
+     * reached the public domain field by a route other than the creator is
+     * still refused. The data the signature is calculated over is built the
+     * same way, so the refusal reaches that too. A domain of exactly the
+     * greatest length is written and parses back unchanged, so this is a
+     * refusal at the top of the range and nothing else.
+     */
+    public function testWriteRefusesDomainOverMaximum(): void
+    {
+        $maximum = OwidException::MAXIMUM_DOMAIN_LENGTH;
+        $owid = new Owid();
+        $owid->payload = 'value';
+        $owid->signature = str_repeat(chr(0x99), self::SIGNATURE_LENGTH);
+
+        $owid->domain = self::domain($maximum + 1);
+        foreach (['asByteArray', 'dataForCrypto'] as $method) {
+            try {
+                $owid->$method();
+                $this->fail("$method should have refused the long domain");
+            } catch (OwidException $e) {
+                $this->assertStringContainsString(
+                    "'$maximum'",
+                    $e->getMessage()
+                );
+            }
+        }
+
+        $owid->domain = self::domain($maximum);
+        $parsed = Owid::fromByteArray($owid->asByteArray());
+        $this->assertSame($owid->domain, $parsed->domain);
+    }
+
+    /**
+     * The refusal happens before any signature is calculated. A creator is
+     * refused before its crypto instance is looked at, which is shown by
+     * handing the constructor an instance that can only verify, because a
+     * message naming the key rather than the maximum would mean the two
+     * checks ran the other way round. A domain that arrives on another OWID
+     * covered by the signature is refused while the data to sign is being
+     * built, which is before the signing key is used, so the signature field
+     * is left holding exactly what it held before.
+     */
+    public function testRefusalHappensBeforeAnySignature(): void
+    {
+        $domain = self::domain(OwidException::MAXIMUM_DOMAIN_LENGTH + 1);
+        $maximum = OwidException::MAXIMUM_DOMAIN_LENGTH;
+        $crypto = Crypto::new();
+        $verifyOnly = Crypto::newVerifyOnly($crypto->publicKeyPem());
+
+        try {
+            new Creator($domain, $verifyOnly);
+            $this->fail('over long creator domain should have been refused');
+        } catch (OwidException $e) {
+            $this->assertStringContainsString("'$maximum'", $e->getMessage());
+        }
+
+        $other = new Owid();
+        $other->domain = $domain;
+        $other->payload = 'other';
+        $other->signature = str_repeat(chr(0x11), self::SIGNATURE_LENGTH);
+        $owid = new Owid();
+        $owid->payload = 'value';
+        $owid->signature = str_repeat(chr(0x22), self::SIGNATURE_LENGTH);
+
+        try {
+            (new Creator('51d.es', $crypto))->signWithOthers($owid, [$other]);
+            $this->fail('over long domain on another OWID should be refused');
+        } catch (OwidException $e) {
+            $this->assertStringContainsString("'$maximum'", $e->getMessage());
+        }
+        $this->assertSame(
+            str_repeat(chr(0x22), self::SIGNATURE_LENGTH),
+            $owid->signature,
+            'the signature should not have been calculated'
+        );
     }
 
     /**

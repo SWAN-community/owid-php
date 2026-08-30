@@ -57,6 +57,13 @@ this library stores. A domain with no terminator, or one longer than a domain
 name may be, is rejected for a cost set by that maximum rather than by the
 length of the buffer.
 
+The same maximum binds the write, so this library cannot produce an OWID it
+would then refuse to read. A `Creator` refuses a domain longer than the
+maximum when the domain is supplied, which is the earliest point the caller
+can be told, and the serialization refuses one as well, so a domain that
+reaches the `Owid` domain field by any other route is caught before the
+signature is calculated.
+
 The in-memory APIs remain subject to PHP string, platform, address-space and
 available-memory limits. Applications accepting untrusted OWIDs must choose
 limits suitable for their use case and enforce them before buffering the

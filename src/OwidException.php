@@ -92,18 +92,22 @@ final class OwidException extends Exception
     }
 
     /**
-     * The domain field has no terminator within the greatest number of
-     * characters a domain name can hold, so either the terminator is missing
-     * or the domain is longer than a domain name may be. The bytes are not
-     * named because they are whatever the sender wrote and there may be no
-     * end to them.
+     * The domain is longer than the greatest number of characters a domain
+     * name can hold. Both halves of the library raise this, so both report
+     * the one condition the one way. On a read the domain field has no
+     * terminator within that many characters, so whatever the field holds
+     * runs past the bound, and on a write the value handed in is longer
+     * than the bound. The domain is not named because on a read the bytes
+     * are whatever the sender wrote and there may be no end to them, and
+     * because writeString cannot tell which of the two routes a value
+     * arrived by.
      */
     public static function domainTooLong(): self
     {
         $maximum = self::MAXIMUM_DOMAIN_LENGTH;
         return new self(
-            "OWID domain has no terminator within the '$maximum' characters " .
-            "a domain name can hold"
+            "OWID domain is longer than the '$maximum' characters a domain " .
+            "name can hold"
         );
     }
 

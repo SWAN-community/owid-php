@@ -225,15 +225,28 @@ final class Io
     }
 
     /**
-     * Writes the string followed by the null terminator. The string must not
-     * contain a null character as that would conflict with the terminator.
+     * Writes the string followed by the null terminator. The only such string
+     * in an OWID is the creator domain. The value must not contain a null
+     * character as that would conflict with the terminator, and must not be
+     * longer than the greatest number of characters a domain name can hold,
+     * because readString stops looking for the terminator at that bound and
+     * would refuse anything longer. Without this the library could write an
+     * OWID it then refused to read, and the fault would land on whoever read
+     * it rather than on the creator that caused it. This is the later of the
+     * two write side checks, and it catches a domain that reached the OWID
+     * by some route other than the creator, such as the public domain field
+     * being assigned directly.
      *
-     * @throws OwidException when the value contains a null byte.
+     * @throws OwidException when the value contains a null byte, or is
+     *                       longer than a domain name can hold.
      */
     public static function writeString(string &$buffer, string $value): void
     {
         if (strpos($value, "\0") !== false) {
             throw OwidException::invalidDomain($value);
+        }
+        if (strlen($value) > OwidException::MAXIMUM_DOMAIN_LENGTH) {
+            throw OwidException::domainTooLong();
         }
         $buffer .= $value . "\0";
     }

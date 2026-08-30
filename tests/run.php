@@ -405,11 +405,15 @@ function domainOfLength(int $length): string
     $labels[] = str_repeat('a', $remaining);
     return implode('.', $labels);
 }
+// The domain and its terminator are appended here rather than through
+// Io::writeString because these checks build domains the write side now
+// refuses, and the point of them is what the read side does with such bytes
+// when they arrive from somewhere else.
 function domainEnvelope(string $domain): string
 {
     $buffer = '';
     Io::writeByte($buffer, Version::Version3->asByte());
-    Io::writeString($buffer, $domain);
+    $buffer .= $domain . chr(0);
     Io::writeUint32($buffer, 1000);
     Io::writeUint32($buffer, 0);
     return $buffer . str_repeat("\x99", 64);
@@ -478,6 +482,92 @@ $runner->check(
     'signed OWID with the greatest length domain parses and verifies',
     $maximumParsed->domain === $maximumDomain &&
     $maximumParsed->verifyWithCrypto($maximumCrypto)
+);
+
+// The write is bounded as well, at the creator where the domain is supplied
+// and again in the serialization, so this library cannot produce an OWID it
+// would then refuse to read.
+function domainRefusalNamesMaximum(callable $action): bool
+{
+    try {
+        $action();
+    } catch (OwidException $e) {
+        return str_contains(
+            $e->getMessage(),
+            "'" . OwidException::MAXIMUM_DOMAIN_LENGTH . "'"
+        );
+    }
+    return false;
+}
+$overLongDomain = domainOfLength(OwidException::MAXIMUM_DOMAIN_LENGTH + 1);
+$runner->check(
+    'creator refuses a domain over the greatest length, naming the maximum',
+    domainRefusalNamesMaximum(
+        fn () => new Creator($overLongDomain, $maximumCrypto)
+    )
+);
+$runner->check(
+    'creator from configuration refuses a domain over the greatest length',
+    domainRefusalNamesMaximum(
+        fn () => Creator::fromConfiguration(
+            $overLongDomain,
+            $maximumCrypto->privateKeyPem()
+        )
+    )
+);
+$overLongOwid = new Owid();
+$overLongOwid->domain = $overLongDomain;
+$overLongOwid->payload = 'value';
+$overLongOwid->signature = str_repeat(chr(0x99), 64);
+$runner->check(
+    'serializing a domain over the greatest length is refused',
+    domainRefusalNamesMaximum(fn () => $overLongOwid->asByteArray())
+);
+$runner->check(
+    'building signing data for a domain over the greatest length is refused',
+    domainRefusalNamesMaximum(fn () => $overLongOwid->dataForCrypto())
+);
+$atBoundOwid = new Owid();
+$atBoundOwid->domain = $maximumDomain;
+$atBoundOwid->payload = 'value';
+$atBoundOwid->signature = str_repeat(chr(0x99), 64);
+$runner->check(
+    'serializing a domain of the greatest length parses back unchanged',
+    Owid::fromByteArray($atBoundOwid->asByteArray())->domain === $maximumDomain
+);
+// The creator refuses the domain before it looks at the crypto instance, so
+// an instance that can only verify still gives the domain message and not
+// the key one, and nothing is ever signed with a domain that could not be
+// read back.
+$runner->check(
+    'creator refuses the domain before looking at the crypto instance',
+    domainRefusalNamesMaximum(
+        fn () => new Creator(
+            $overLongDomain,
+            Crypto::newVerifyOnly($maximumCrypto->publicKeyPem())
+        )
+    )
+);
+// A domain arriving on another OWID covered by the signature is refused
+// while the data to sign is being built, which is before the signing key is
+// used, so the signature field is left holding what it held before.
+$otherOwid = new Owid();
+$otherOwid->domain = $overLongDomain;
+$otherOwid->payload = 'other';
+$otherOwid->signature = str_repeat(chr(0x11), 64);
+$targetOwid = new Owid();
+$targetOwid->payload = 'value';
+$targetOwid->signature = str_repeat(chr(0x22), 64);
+$runner->check(
+    'over long domain on another OWID is refused when signing',
+    domainRefusalNamesMaximum(
+        fn () => (new Creator('51d.es', $maximumCrypto))
+            ->signWithOthers($targetOwid, [$otherOwid])
+    )
+);
+$runner->check(
+    'signature is not calculated when the domain is refused',
+    $targetOwid->signature === str_repeat(chr(0x22), 64)
 );
 
 exit($runner->summary());
