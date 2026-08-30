@@ -8,17 +8,22 @@ on:
 
 jobs:
   test:
-    name: test
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        # The floor composer.json supports, and the two most recent releases,
+        # because the library uses enums and read only properties that arrived
+        # in 8.1 and must keep working on it.
+        php-version: ['8.1', '8.3', '8.4']
     runs-on: ${{ matrix.os }}
+    name: test php ${{ matrix.php-version }} on ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.3'
+          php-version: ${{ matrix.php-version }}
           extensions: mbstring, openssl
       - run: composer install --no-interaction --no-progress
       - run: php vendor/bin/phpunit
+      - run: php tests/run.php

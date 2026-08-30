@@ -20,6 +20,9 @@ declare(strict_types=1);
 
 namespace SwanCommunity\Owid\Tests;
 
+use RuntimeException;
+use SwanCommunity\Owid\Owid;
+
 /**
  * Shared test vectors. The canonical wire vectors prove the reader and writer
  * match the wire format. The cross language fixtures hold real signatures
@@ -28,6 +31,37 @@ namespace SwanCommunity\Owid\Tests;
  */
 final class Fixtures
 {
+    /**
+     * Reads the base 64 OWID given, which a test expects to be well formed,
+     * and fails the run with the reason when it is not. Tests that are about
+     * a parse failing read the result themselves and assert its status.
+     */
+    public static function parseBase64(string $value): Owid
+    {
+        $result = Owid::tryFromBase64($value);
+        if (!$result->ok) {
+            throw new RuntimeException(
+                'fixture did not parse: ' . $result->status->value
+            );
+        }
+        return $result->owid;
+    }
+
+    /**
+     * Reads the bytes given, which a test expects to be one whole OWID, and
+     * fails the run with the reason when they are not.
+     */
+    public static function parseBytes(string $bytes): Owid
+    {
+        $result = Owid::tryFromByteArray($bytes);
+        if (!$result->ok) {
+            throw new RuntimeException(
+                'bytes did not parse: ' . $result->status->value
+            );
+        }
+        return $result->owid;
+    }
+
     /**
      * The CREATOR canonical wire vector. Version 2, domain 51db.uk, payload
      * length 341, date 664619 minutes after the base date. Unpadded base 64.

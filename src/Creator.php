@@ -20,8 +20,6 @@ declare(strict_types=1);
 
 namespace SwanCommunity\Owid;
 
-use DateTimeImmutable;
-
 /**
  * Needed to create new OWIDs.
  *
@@ -93,60 +91,27 @@ final class Creator
     }
 
     /**
-     * Signs the OWID provided, setting the domain to the creator domain, the
-     * date to the current time, and the version to the current version.
+     * Creates and signs a new OWID for this creator carrying the payload
+     * given, and covering any others given.
+     *
+     * This is the only way to make an OWID, and it makes a finished one. The
+     * creator owns the version, the domain, the date and the signature, so a
+     * caller supplies the payload and nothing else and there is no moment at
+     * which an unsigned OWID exists. Signing an OWID that already exists is
+     * not offered, because there is nothing outside to sign and re-signing one
+     * would replace a signature its fields were read with.
+     *
+     * A PHP string is a byte array, so the payload may be text or raw bytes
+     * and there is one method rather than a pair.
+     *
+     * @param array<int, Owid> $others covered by the signature, and required
+     *                                 in the same order when verifying
      *
      * @throws OwidException when the fields can not be encoded or the signing
      *                       operation fails.
      */
-    public function sign(Owid $owid): void
+    public function create(string $payload, array $others = []): Owid
     {
-        $this->signWithOthers($owid, []);
-    }
-
-    /**
-     * Signs the OWID provided together with the other OWIDs provided. The same
-     * others, in the same order, must be passed when verifying.
-     *
-     * @param array<int, Owid> $others
-     *
-     * @throws OwidException when the fields can not be encoded or the signing
-     *                       operation fails.
-     */
-    public function signWithOthers(Owid $owid, array $others): void
-    {
-        $owid->version = Version::default();
-        $owid->domain = $this->domain;
-        $owid->date = new DateTimeImmutable('now');
-        $data = $owid->dataForCrypto($others);
-        $owid->signature = $this->crypto->signByteArray($data);
-        if (strlen($owid->signature) !== OwidException::SIGNATURE_LENGTH) {
-            throw OwidException::invalidSignatureLength(strlen($owid->signature));
-        }
-    }
-
-    /**
-     * Creates a new signed OWID for the creator containing the string as the
-     * payload.
-     *
-     * @throws OwidException when the OWID can not be signed.
-     */
-    public function signString(string $value): Owid
-    {
-        return $this->signBytes($value);
-    }
-
-    /**
-     * Creates a new signed OWID for the creator containing the bytes as the
-     * payload.
-     *
-     * @throws OwidException when the OWID can not be signed.
-     */
-    public function signBytes(string $value): Owid
-    {
-        $owid = new Owid();
-        $owid->payload = $value;
-        $this->sign($owid);
-        return $owid;
+        return Owid::createSignedBy($this, $payload, $others);
     }
 }

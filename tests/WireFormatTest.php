@@ -21,7 +21,7 @@ declare(strict_types=1);
 namespace SwanCommunity\Owid\Tests;
 
 use PHPUnit\Framework\TestCase;
-use SwanCommunity\Owid\OwidException;
+use SwanCommunity\Owid\ParseStatus;
 use SwanCommunity\Owid\Owid;
 use SwanCommunity\Owid\Version;
 
@@ -46,7 +46,7 @@ final class WireFormatTest extends TestCase
         foreach ($vectors as $name => $value) {
             $bytes = base64_decode($value, true);
             $this->assertNotFalse($bytes, "vector $name should decode");
-            $owid = Owid::fromByteArray($bytes);
+            $owid = Fixtures::parseBytes($bytes);
             $this->assertSame(
                 bin2hex($bytes),
                 bin2hex($owid->asByteArray()),
@@ -60,7 +60,7 @@ final class WireFormatTest extends TestCase
      */
     public function testCreatorVectorFields(): void
     {
-        $owid = Owid::fromBase64(Fixtures::CANONICAL_CREATOR);
+        $owid = Fixtures::parseBase64(Fixtures::CANONICAL_CREATOR);
         $this->assertSame('51db.uk', $owid->domain);
         $this->assertSame(Version::Version2, $owid->version);
         $this->assertSame(341, strlen($owid->payload));
@@ -76,7 +76,7 @@ final class WireFormatTest extends TestCase
      */
     public function testSupplierVectorPayloadForms(): void
     {
-        $owid = Owid::fromBase64(Fixtures::CANONICAL_SUPPLIER);
+        $owid = Fixtures::parseBase64(Fixtures::CANONICAL_SUPPLIER);
         $this->assertSame('pop-up.swan-demo.uk', $owid->domain);
         $this->assertSame("\x01\x03", $owid->payload);
         $this->assertSame('0103', $owid->payloadAsPrintable());
@@ -88,7 +88,7 @@ final class WireFormatTest extends TestCase
      */
     public function testBadVectorParses(): void
     {
-        $owid = Owid::fromBase64(Fixtures::CANONICAL_BAD);
+        $owid = Fixtures::parseBase64(Fixtures::CANONICAL_BAD);
         $this->assertSame('badssp.swan-demo.uk', $owid->domain);
         $this->assertSame(64, strlen($owid->signature));
     }
@@ -98,10 +98,10 @@ final class WireFormatTest extends TestCase
      */
     public function testDecodeAcceptsPaddedAndUnpadded(): void
     {
-        $padded = Owid::fromBase64(Fixtures::CANONICAL_SUPPLIER . '');
+        $padded = Fixtures::parseBase64(Fixtures::CANONICAL_SUPPLIER . '');
         $reEncoded = $padded->asBase64();
         $this->assertStringEndsWith('=', $reEncoded, 'encoding always pads');
-        $fromPadded = Owid::fromBase64($reEncoded);
+        $fromPadded = Fixtures::parseBase64($reEncoded);
         $this->assertSame(
             bin2hex($padded->asByteArray()),
             bin2hex($fromPadded->asByteArray())
@@ -117,27 +117,36 @@ final class WireFormatTest extends TestCase
         $buffer = '';
         Owid::emptyToBuffer($buffer);
         $this->assertSame("\x00", $buffer);
-        $owid = Owid::fromByteArray($buffer);
+        $owid = Fixtures::parseBytes($buffer);
         $this->assertSame(Version::Empty, $owid->version);
     }
 
     /**
-     * An unknown version byte is rejected.
+     * An unknown version byte is reported rather than raised, and nothing is
+     * handed back to read.
      */
-    public function testUnknownVersionRejected(): void
+    public function testUnknownVersionReported(): void
     {
-        $this->expectException(OwidException::class);
-        Owid::fromByteArray("\x09rest");
+        $result = Owid::tryFromByteArray("\x09rest");
+
+        $this->assertFalse($result->ok);
+        $this->assertNull($result->owid);
+        $this->assertSame(ParseStatus::UnsupportedVersion, $result->status);
     }
 
     /**
-     * A truncated buffer is rejected.
+     * A buffer that stops inside the envelope is reported as data that ended
+     * early, and nothing is handed back to read.
      */
-    public function testTruncatedBufferRejected(): void
+    public function testTruncatedBufferReported(): void
     {
         $bytes = base64_decode(Fixtures::CANONICAL_SUPPLIER, true);
         $this->assertNotFalse($bytes);
-        $this->expectException(OwidException::class);
-        Owid::fromByteArray(substr($bytes, 0, 10));
+
+        $result = Owid::tryFromByteArray(substr($bytes, 0, 10));
+
+        $this->assertFalse($result->ok);
+        $this->assertNull($result->owid);
+        $this->assertSame(ParseStatus::UnexpectedEnd, $result->status);
     }
 }

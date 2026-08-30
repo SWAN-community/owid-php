@@ -21,13 +21,16 @@ declare(strict_types=1);
 namespace SwanCommunity\Owid;
 
 use DateTimeImmutable;
-use DateTimeZone;
 
 /**
- * Low level read and write helpers for the OWID binary format. The format uses
- * little endian unsigned 32 bit integers, null terminated strings, and a fixed
- * 64 byte signature. Strings in PHP are byte arrays, so all buffers here are
- * plain strings holding raw bytes.
+ * Low level write helpers for the OWID binary format, and the base date the
+ * format counts from. The format uses little endian unsigned 32 bit integers,
+ * null terminated strings, and a fixed 64 byte signature. Strings in PHP are
+ * byte arrays, so all buffers here are plain strings holding raw bytes.
+ *
+ * Reading lives in Owid, which walks the buffer by index and reports a status
+ * rather than raising, because the bytes come from outside and being malformed
+ * is an ordinary outcome for them.
  */
 final class Io
 {
@@ -46,177 +49,6 @@ final class Io
     }
 
     /**
-     * Sequential reader over a byte buffer. PHP strings are used as the byte
-     * buffer because each element accessed by offset is a single byte.
-     */
-    private string $buffer;
-    private int $length;
-    private int $position;
-
-    public function __construct(string $buffer)
-    {
-        $this->buffer = $buffer;
-        $this->length = strlen($buffer);
-        $this->position = 0;
-    }
-
-    /**
-     * Reads a single byte and returns its unsigned integer value.
-     *
-     * @throws OwidException when the buffer has no more bytes.
-     */
-    public function readByte(): int
-    {
-        if ($this->position >= $this->length) {
-            throw OwidException::unexpectedEndOfBuffer();
-        }
-        $value = ord($this->buffer[$this->position]);
-        $this->position += 1;
-        return $value;
-    }
-
-    /**
-     * Reads the requested number of raw bytes from the buffer.
-     *
-     * @throws OwidException when the buffer is too short.
-     */
-    public function readBytes(int $count): string
-    {
-        if ($count < 0 || $this->position + $count > $this->length) {
-            throw OwidException::unexpectedEndOfBuffer();
-        }
-        $value = substr($this->buffer, $this->position, $count);
-        $this->position += $count;
-        return $value;
-    }
-
-    /**
-     * Returns the number of unread bytes, so a top-level decoder can require
-     * EOF while a framed reader can deliberately leave following data.
-     */
-    public function remaining(): int
-    {
-        return $this->length - $this->position;
-    }
-
-    /**
-     * Reads bytes until the null terminator and returns them as a string. The
-     * terminator is consumed but not returned. The only such string in an
-     * OWID is the creator domain, and the terminator is whatever the sender
-     * wrote, so the search for it stops after the greatest number of
-     * characters a domain name can hold rather than running to the end of the
-     * buffer. A buffer with no terminator therefore costs the bound and not
-     * its own length. strcspn is used because it takes the window as an
-     * argument and so examines no more bytes than the window, whereas strpos
-     * would search the rest of the buffer.
-     *
-     * @throws OwidException when the domain has no terminator within the
-     *                       characters a domain name can hold, or the buffer
-     *                       ends before the terminator.
-     */
-    public function readString(): string
-    {
-        $maximum = OwidException::MAXIMUM_DOMAIN_LENGTH;
-        $count = strcspn($this->buffer, "\0", $this->position, $maximum + 1);
-        if ($count > $maximum) {
-            throw OwidException::domainTooLong();
-        }
-        $terminator = $this->position + $count;
-        if ($terminator >= $this->length) {
-            throw OwidException::unexpectedEndOfBuffer();
-        }
-        $value = substr($this->buffer, $this->position, $count);
-        $this->position = $terminator + 1;
-        return $value;
-    }
-
-    /**
-     * Reads an unsigned 32 bit little endian integer.
-     *
-     * @throws OwidException when the buffer is too short.
-     */
-    public function readUint32(): int
-    {
-        if ($this->position + 4 > $this->length) {
-            throw OwidException::unexpectedEndOfBuffer();
-        }
-        /** @var array{1: int} $unpacked */
-        $unpacked = unpack('V', $this->buffer, $this->position);
-        $this->position += 4;
-        return $unpacked[1];
-    }
-
-    /**
-     * Reads a byte array prefixed with its length as an unsigned 32 bit
-     * integer. The count is bounded by the bytes present in readBytes, so
-     * nothing is sized by the declared number alone. The OWID payload is
-     * read with readPayload instead, because the payload must also be
-     * followed by the fixed-length signature.
-     *
-     * @throws OwidException when the buffer is too short.
-     */
-    public function readByteArray(): string
-    {
-        $count = $this->readUint32();
-        return $this->readBytes($count);
-    }
-
-    /**
-     * Reads the length prefixed payload of an OWID, which must be followed
-     * by the signature. The count is whatever the sender
-     * declared, so it is checked against the bytes actually present before
-     * anything is sized by it. The count must leave at least the signature;
-     * a public reader consumes one OWID and leaves following framed bytes,
-     * while top-level byte-array parsing separately requires EOF.
-     *
-     * @throws OwidException when the declared length does not leave a
-     *                       complete signature after the payload.
-     */
-    public function readPayload(): string
-    {
-        $count = $this->readUint32();
-        $present = $this->length - $this->position;
-        if ($count + OwidException::SIGNATURE_LENGTH > $present) {
-            throw OwidException::payloadLengthMismatch($count, $present);
-        }
-        return $this->readBytes($count);
-    }
-
-    /**
-     * Reads the fixed length signature.
-     *
-     * @throws OwidException when the buffer is too short.
-     */
-    public function readSignature(): string
-    {
-        return $this->readBytes(OwidException::SIGNATURE_LENGTH);
-    }
-
-    /**
-     * Reads the date using the encoding associated with the version.
-     *
-     * @throws OwidException when the version has no date encoding or the
-     *                       buffer is too short.
-     */
-    public function readDate(Version $version): DateTimeImmutable
-    {
-        switch ($version) {
-            case Version::Version1:
-                $bytes = $this->readBytes(2);
-                /** @var array{1: int} $unpacked */
-                $unpacked = unpack('n', $bytes);
-                $hours = $unpacked[1];
-                return self::baseDate()->modify('+' . $hours . ' hours');
-            case Version::Version2:
-            case Version::Version3:
-                $minutes = $this->readUint32();
-                return self::baseDate()->modify('+' . $minutes . ' minutes');
-            default:
-                throw OwidException::unsupportedVersion($version->asByte());
-        }
-    }
-
-    /**
      * Appends a single byte, given as an unsigned integer, to the buffer.
      */
     public static function writeByte(string &$buffer, int $value): void
@@ -229,13 +61,14 @@ final class Io
      * in an OWID is the creator domain. The value must not contain a null
      * character as that would conflict with the terminator, and must not be
      * longer than the greatest number of characters a domain name can hold,
-     * because readString stops looking for the terminator at that bound and
+     * because reading stops looking for the terminator at that bound and
      * would refuse anything longer. Without this the library could write an
      * OWID it then refused to read, and the fault would land on whoever read
      * it rather than on the creator that caused it. This is the later of the
-     * two write side checks, and it catches a domain that reached the OWID
-     * by some route other than the creator, such as the public domain field
-     * being assigned directly.
+     * two write side checks. Since an OWID can only be parsed or created, and
+     * both routes are bounded, no OWID can now carry a domain this refuses, so
+     * what it guards is a caller writing the format with these helpers
+     * directly.
      *
      * @throws OwidException when the value contains a null byte, or is
      *                       longer than a domain name can hold.
