@@ -111,13 +111,12 @@ final class WireFormatTest extends TestCase
     }
 
     /**
-     * An empty OWID marker is a single zero byte, and a whole buffer holding
-     * one is refused. The marker carries no domain, date, payload or
-     * signature, so it can never verify, and reading one as an OWID would hand
-     * a caller the one kind of instance that has no signature. A framed read
-     * still reports it, because there it says an optional OWID is absent,
-     * which a caller walking the frames has to be able to tell from a frame
-     * that is malformed.
+     * The marker for a node that is absent is a single zero byte, and reading
+     * a whole buffer holding one reports it as an absent node and hands back
+     * no OWID. The marker carries no domain, date, payload or signature, so it
+     * can never verify, and reading one as an OWID would hand a caller the one
+     * kind of instance that has no signature. It is not an unknown version
+     * either, because version 0 is supported and meaningful.
      */
     public function testEmptyOwidMarkerIsRefusedAsAWholeBuffer(): void
     {
@@ -129,12 +128,14 @@ final class WireFormatTest extends TestCase
 
         $this->assertFalse($result->ok);
         $this->assertNull($result->owid);
-        $this->assertSame(ParseStatus::UnsupportedVersion, $result->status);
+        $this->assertSame(ParseStatus::AbsentNode, $result->status);
     }
 
     /**
-     * A framed buffer whose first frame is the marker reports it, consumes its
-     * one byte, and leaves the OWID that follows to be read next.
+     * A framed buffer whose first frame is the marker reports an absent node,
+     * hands back no OWID, counts its one byte, and leaves the OWID that
+     * follows to be read next. A caller walking the frames can therefore tell
+     * an absent node from a frame that is malformed.
      */
     public function testEmptyOwidMarkerIsReadWhenFramed(): void
     {
@@ -144,8 +145,9 @@ final class WireFormatTest extends TestCase
         $buffer .= $owid->asByteArray();
 
         $marker = Owid::tryFromFrame($buffer);
-        $this->assertTrue($marker->ok);
-        $this->assertSame(Version::Empty, $marker->owid->version);
+        $this->assertFalse($marker->ok, 'an absent node is not a value');
+        $this->assertNull($marker->owid);
+        $this->assertSame(ParseStatus::AbsentNode, $marker->status);
         $this->assertSame(1, $marker->consumed);
 
         $next = Owid::tryFromFrame($buffer, $marker->consumed);

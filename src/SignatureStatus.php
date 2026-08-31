@@ -77,8 +77,17 @@ enum SignatureStatus: string
 
     /**
      * The check could not be completed for a reason that is not the
-     * identifier's fault, such as the cryptographic provider failing on
-     * inputs that were both valid.
+     * identifier's fault, such as the cryptographic provider failing on inputs
+     * that were both valid.
+     *
+     * Unreachable here, and so untested. The two ways to reach it are openssl
+     * reporting an error rather than a verdict, which valid key material and a
+     * well formed signature do not produce, and fields that cannot be written
+     * into the data a signature covers, which no OWID a caller can hold has,
+     * because every one is either read or created, both routes bound every
+     * field, and the marker for an absent node is never handed out. It is kept
+     * because a caller of Crypto supplies its own data, and because a provider
+     * failure must have somewhere to go other than SignatureInvalid.
      */
     case VerificationError = 'VerificationError';
 }

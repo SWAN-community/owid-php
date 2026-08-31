@@ -190,13 +190,44 @@ and nothing else, so bytes after the envelope are refused. `tryFromFrame` reads
 one OWID from a buffer that may carry more after it and leaves the rest alone,
 because what follows may be the next envelope.
 
-The marker for an OWID that is not present, a single zero byte written by
-`Owid::emptyToBuffer`, is refused by the whole buffer surfaces as
-`ParseStatus::UnsupportedVersion`. It carries no domain, date, payload or
-signature, so it can never verify, and reading one as an OWID would be the one
-way an instance with no signature could reach calling code. It still means
-something inside a framed buffer, where it says an optional OWID is absent, so
-`tryFromFrame` reports it and consumes its one byte.
+A frame whose declared payload runs past the bytes supplied is
+`ParseStatus::UnexpectedEnd`, because there the bytes may still be arriving and
+a caller has to be able to tell waiting for more from giving up.
+`ParseStatus::ByteCountMismatch` belongs to the whole buffer surfaces, where
+every byte is present by definition and a declaration that disagrees with them
+is the finding.
+
+The marker for a node that is absent, a single zero byte written by
+`Owid::emptyToBuffer`, is `ParseStatus::AbsentNode`. No OWID is handed back,
+because the marker carries no domain, date, payload or signature and so can
+never verify, and reading one as an identifier would be the one way an instance
+with no signature could reach calling code. It is not an unknown version,
+because version 0 is supported and meaningful, and it is not a malformed frame
+either. The result counts its one byte as consumed, so a caller walking a run
+of frames steps over the absent node and reads the next one.
+
+```php
+use SwanCommunity\Owid\ParseStatus;
+
+// A buffer holding one OWID, a node that is absent, then another OWID.
+$framedBuffer = $creator->create('first')->asByteArray();
+Owid::emptyToBuffer($framedBuffer);
+$framedBuffer .= $creator->create('second')->asByteArray();
+
+$offset = 0;
+$identifiers = [];
+while ($offset < strlen($framedBuffer)) {
+    $frame = Owid::tryFromFrame($framedBuffer, $offset);
+    if ($frame->status === ParseStatus::AbsentNode) {
+        // A node that is not there, which is not the same as a bad frame.
+    } elseif ($frame->ok) {
+        $identifiers[] = $frame->owid;
+    } else {
+        break;
+    }
+    $offset += $frame->consumed;
+}
+```
 
 Reading is not verification. A successfully read OWID is structurally valid and
 nothing more, and whether its signature is genuine is a separate question with
@@ -211,7 +242,8 @@ The public classes live in the `SwanCommunity\Owid` namespace.
   - `Owid::tryFromBase64`, `Owid::tryFromByteArray` read one complete OWID and
     report a `ParseResult`.
   - `Owid::tryFromFrame` reads one OWID from a buffer that carries more after
-    it, reporting how many bytes it occupied.
+    it, reporting how many bytes it occupied, and reports a node that is absent
+    as `ParseStatus::AbsentNode` rather than as a fault.
   - `asBase64`, `asByteArray` serialize an OWID, and
     `Owid::emptyToBuffer` writes the marker for one that is not present.
   - `payloadAsString` returns the raw payload bytes, `payloadAsPrintable`

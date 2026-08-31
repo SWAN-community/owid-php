@@ -417,12 +417,17 @@ final class ParseContractTest extends TestCase
     }
 
     /**
-     * The marker for an absent OWID cannot be read as a whole buffer. It is
-     * the one instance that carries no signature, so reading one here would
-     * hand calling code exactly what the construction boundary exists to
-     * prevent, and it can never verify because it carries no fields either.
-     * Inside a framed buffer it still means an optional OWID is absent, so a
-     * framed read reports it.
+     * The marker for a node that is absent never hands back an OWID, on
+     * either contract. It is the one value that carries no signature, so
+     * reading one as an identifier would hand calling code exactly what the
+     * construction boundary exists to prevent, and it can never verify because
+     * it carries no fields either.
+     *
+     * It is reported as itself rather than as an unknown version, because
+     * version 0 is supported and meaningful, and rather than as a malformed
+     * frame, because a caller walking a run of frames has to be able to tell
+     * an absent node from a frame it cannot read. Its one byte is counted so
+     * that the same arithmetic walks over it.
      */
     public function testTheAbsentOwidMarkerIsRefusedAsAWholeBuffer(): void
     {
@@ -432,16 +437,52 @@ final class ParseContractTest extends TestCase
             $value = $method === 'tryFromBase64' ? base64_encode($marker) : $marker;
             $result = Owid::$method($value);
 
-            $this->assertFalse($result->ok, "$method should refuse the marker");
+            $this->assertFalse($result->ok, "$method should hand back no OWID");
             $this->assertNull($result->owid);
-            $this->assertSame(ParseStatus::UnsupportedVersion, $result->status);
+            $this->assertSame(ParseStatus::AbsentNode, $result->status);
         }
 
         $framed = Owid::tryFromFrame(
             $marker . self::creator()->create('x')->asByteArray()
         );
-        $this->assertTrue($framed->ok, 'a framed read still reports the marker');
-        $this->assertSame(1, $framed->consumed);
+        $this->assertFalse($framed->ok, 'an absent node is not a value');
+        $this->assertNull($framed->owid);
+        $this->assertSame(ParseStatus::AbsentNode, $framed->status);
+        $this->assertSame(1, $framed->consumed, 'the marker byte is counted');
+    }
+
+    /**
+     * A caller walking a run of frames steps over an absent node and reads the
+     * identifiers around it, which is the whole point of reporting the marker
+     * rather than refusing it.
+     */
+    public function testAFrameWalkStepsOverAnAbsentNode(): void
+    {
+        $creator = self::creator();
+        $first = $creator->create('first');
+        $second = $creator->create('second');
+        $buffer = $first->asByteArray();
+        Owid::emptyToBuffer($buffer);
+        $buffer .= $second->asByteArray();
+
+        $payloads = [];
+        $absent = 0;
+        $offset = 0;
+        while ($offset < strlen($buffer)) {
+            $frame = Owid::tryFromFrame($buffer, $offset);
+            if ($frame->status === ParseStatus::AbsentNode) {
+                $absent += 1;
+            } elseif ($frame->ok) {
+                $payloads[] = $frame->owid->payloadAsString();
+            } else {
+                $this->fail('the walk should not meet a malformed frame');
+            }
+            $offset += $frame->consumed;
+        }
+
+        $this->assertSame(['first', 'second'], $payloads);
+        $this->assertSame(1, $absent);
+        $this->assertSame(strlen($buffer), $offset);
     }
 
     /**
@@ -460,6 +501,42 @@ final class ParseContractTest extends TestCase
             Owid::tryFromBase64("\n\n\n\n")->status,
             'base 64 that decodes to no bytes supplied nothing'
         );
+    }
+
+    /**
+     * A framed read whose declared payload runs past the bytes supplied is
+     * data stopping early rather than a declaration disagreeing with data that
+     * is all present. A caller reading from a source that is still arriving
+     * has to be able to tell waiting for more bytes from giving up, and those
+     * are different answers. The disagreement is only meaningful on the whole
+     * buffer contract, where every byte is present by definition.
+     */
+    public function testAShortFrameEndsEarlyRatherThanDisagreeing(): void
+    {
+        $bytes = self::creator()->create(str_repeat('p', 40))->asByteArray();
+        $cuts = [
+            'one byte short of the signature' => strlen($bytes) - 1,
+            'no signature at all' => strlen($bytes) - 64,
+            'half the payload missing' => strlen($bytes) - 84,
+        ];
+
+        foreach ($cuts as $label => $cut) {
+            $framed = Owid::tryFromFrame(substr($bytes, 0, $cut));
+            $this->assertFalse($framed->ok, "$label should not read");
+            $this->assertNull($framed->owid);
+            $this->assertSame(
+                ParseStatus::UnexpectedEnd,
+                $framed->status,
+                "$label is data that stopped early"
+            );
+
+            $whole = Owid::tryFromByteArray(substr($bytes, 0, $cut));
+            $this->assertSame(
+                ParseStatus::ByteCountMismatch,
+                $whole->status,
+                "$label on the whole buffer contract is a disagreement"
+            );
+        }
     }
 
     /**
@@ -482,6 +559,8 @@ final class ParseContractTest extends TestCase
         return [
             ParseStatus::Parsed->value =>
                 fn () => Owid::tryFromByteArray($bytes),
+            ParseStatus::AbsentNode->value =>
+                fn () => Owid::tryFromByteArray("\x00"),
             ParseStatus::MissingInput->value =>
                 fn () => Owid::tryFromByteArray(''),
             ParseStatus::InvalidInputType->value =>
@@ -558,13 +637,6 @@ final class ParseContractTest extends TestCase
         $tampered = $owid->asByteArray();
         $last = strlen($tampered) - 1;
         $tampered[$last] = chr(ord($tampered[$last]) ^ 0xFF);
-        // The marker for an absent OWID carries no date, so it cannot be
-        // written into the data a signature covers. Passed as one of the
-        // others it makes the check impossible rather than failed, which is
-        // not the identifier's fault and must not read as one.
-        $marker = Owid::tryFromFrame(
-            "\x00" . $owid->asByteArray()
-        )->owid;
 
         return [
             SignatureStatus::SignatureValid->value =>
@@ -579,8 +651,6 @@ final class ParseContractTest extends TestCase
                 ),
             SignatureStatus::InvalidKey->value =>
                 fn () => $owid->signatureStatus('not a pem'),
-            SignatureStatus::VerificationError->value =>
-                fn () => $owid->signatureStatusWithCrypto($crypto, [$marker]),
         ];
     }
 
@@ -592,10 +662,15 @@ final class ParseContractTest extends TestCase
     public function testEverySignatureStatusIsReachedOrNamedUnreachable(): void
     {
         // This library never fetches a key, and it verifies data already held
-        // in memory, so neither of these can arise here.
+        // in memory, so the first two cannot arise here. The reason for the
+        // third is on the member itself: every OWID is either read or created,
+        // both routes bound every field, and the marker for an absent node is
+        // no longer handed to anyone, so nothing a caller can hold fails to be
+        // written into the data a signature covers.
         $unreachable = [
             SignatureStatus::KeyUnavailable->value,
             SignatureStatus::ImplementationCapacityExceeded->value,
+            SignatureStatus::VerificationError->value,
         ];
         $examples = $this->signatureStatusExamples();
 

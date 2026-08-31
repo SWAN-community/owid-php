@@ -28,6 +28,11 @@ namespace SwanCommunity\Owid;
  * only on success. A named reason, which is ParseStatus::Parsed on success and
  * the specific problem otherwise.
  *
+ * One reason is neither a success nor a fault. The marker for an absent node
+ * is well formed and is not an OWID, so it reports ParseStatus::AbsentNode
+ * with no value and with its one byte counted as consumed, which lets a caller
+ * walking a run of frames step over it and read the next one.
+ *
  * The fields are read only, so a result cannot be changed into saying
  * something the parse did not find.
  */
@@ -45,9 +50,11 @@ final class ParseResult
         /** Parsed on success, and the specific reason otherwise. */
         public readonly ParseStatus $status,
         /**
-         * The number of bytes the envelope occupied, counted from the offset
-         * the read started at, and zero on failure. A caller reading several
-         * OWIDs from one buffer adds this to its offset to reach the next.
+         * The number of bytes accounted for, counted from the offset the read
+         * started at, and zero when nothing could be accounted for. A caller
+         * reading several OWIDs from one buffer adds this to its offset to
+         * reach the next. An absent node counts its one marker byte, so the
+         * same arithmetic steps over it.
          */
         public readonly int $consumed
     ) {
@@ -72,5 +79,19 @@ final class ParseResult
     public static function failed(ParseStatus $status): self
     {
         return new self(false, null, $status, 0);
+    }
+
+    /**
+     * A read that found the marker for an absent node, which occupied the
+     * number of bytes given.
+     *
+     * Neither a value nor a fault, so ok is false, because there is no OWID,
+     * while the bytes are still counted, because the frame was understood.
+     *
+     * @internal Used by the parser in Owid.
+     */
+    public static function absentNode(int $consumed): self
+    {
+        return new self(false, null, ParseStatus::AbsentNode, $consumed);
     }
 }

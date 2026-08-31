@@ -56,7 +56,7 @@ final class ReadmeTest extends TestCase
     {
         $examples = self::examples();
         $this->assertGreaterThanOrEqual(
-            3,
+            4,
             count($examples),
             'the README should still carry its examples'
         );
@@ -73,6 +73,14 @@ final class ReadmeTest extends TestCase
         }
         if ($status !== SignatureStatus::SignatureValid) {
             fwrite(STDERR, 'the example status was ' . $status->value);
+            exit(1);
+        }
+        if (count($identifiers) !== 2) {
+            fwrite(STDERR, 'the frame walk found ' . count($identifiers));
+            exit(1);
+        }
+        if ($offset !== strlen($framedBuffer)) {
+            fwrite(STDERR, 'the frame walk stopped at ' . $offset);
             exit(1);
         }
         PHP;

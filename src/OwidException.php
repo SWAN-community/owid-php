@@ -51,9 +51,11 @@ final class OwidException extends Exception
     public const MAXIMUM_DOMAIN_LENGTH = 253;
 
     /**
-     * The version has no encoding for the field being written. Only the empty
-     * OWID marker reaches this, as it carries no date, and reading reports an
-     * unknown version byte as a ParseStatus rather than raising.
+     * The version has no encoding for the field being written. Only the marker
+     * for an absent node has none, as it carries no date, and no OWID can hold
+     * that version any more, so this is reached by a caller writing the format
+     * with the Io helpers directly. Reading reports an unknown version byte as
+     * a ParseStatus rather than raising.
      */
     public static function unsupportedVersion(int $version): self
     {

@@ -460,21 +460,38 @@ $runner->checkThrows(
 $buffer = '';
 Owid::emptyToBuffer($buffer);
 $runner->check('empty marker is a single zero byte', $buffer === " ");
-// The marker carries no domain, date, payload or signature, so it can never
-// verify, and reading one as a whole buffer would hand a caller the one kind
-// of instance that has no signature. Inside a framed buffer it still says an
-// optional OWID is absent, so a framed read reports it.
-$runner->checkRefused(
-    'the marker for an absent OWID is refused as a whole buffer',
-    $buffer,
-    ParseStatus::UnsupportedVersion
+// The marker for a node that is absent is not an OWID, so no value is handed
+// back on either contract, and it is not an unknown version either, because
+// version 0 is supported and meaningful. Its one byte is counted so that a
+// caller walking a run of frames steps over the absent node.
+$markerWhole = Owid::tryFromByteArray($buffer);
+$runner->check(
+    'the marker for an absent node hands back no OWID as a whole buffer',
+    !$markerWhole->ok &&
+    $markerWhole->owid === null &&
+    $markerWhole->status === ParseStatus::AbsentNode
 );
 $markerFrame = Owid::tryFromFrame($buffer . $signed->asByteArray());
 $runner->check(
-    'the marker for an absent OWID is read when framed',
-    $markerFrame->ok &&
-    $markerFrame->owid->version === Version::Empty &&
+    'the marker for an absent node is reported and counted when framed',
+    !$markerFrame->ok &&
+    $markerFrame->owid === null &&
+    $markerFrame->status === ParseStatus::AbsentNode &&
     $markerFrame->consumed === 1
+);
+$afterMarker = Owid::tryFromFrame($buffer . $signed->asByteArray(), 1);
+$runner->check(
+    'a frame walk steps over an absent node and reads the next OWID',
+    $afterMarker->ok && $afterMarker->owid->payloadAsString() === 'Hello World'
+);
+// A framed envelope that stops early is data that stopped, not a declaration
+// disagreeing with data that is all present, because the bytes may still be
+// arriving and waiting for more is a different answer from giving up.
+$shortFrame = substr($signed->asByteArray(), 0, strlen($signed->asByteArray()) - 1);
+$runner->check(
+    'a short frame ends early rather than disagreeing',
+    Owid::tryFromFrame($shortFrame)->status === ParseStatus::UnexpectedEnd &&
+    Owid::tryFromByteArray($shortFrame)->status === ParseStatus::ByteCountMismatch
 );
 $runner->check(
     'a buffer of no bytes is missing input',

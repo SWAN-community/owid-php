@@ -77,8 +77,8 @@ final class Owid
      * The value may be anything at all, because this is external data and
      * failing to be an OWID is an ordinary outcome. Input with or without the
      * trailing padding is accepted, as an OWID is carried both ways. The
-     * marker for an absent OWID is refused here as it is on the byte array
-     * surface.
+     * marker for an absent node is reported as ParseStatus::AbsentNode, with
+     * no OWID, as it is on the byte array surface.
      *
      * @param mixed $value the base 64 text, or anything a caller was handed
      */
@@ -111,9 +111,9 @@ final class Owid
      *
      * The buffer must be one whole OWID and nothing else, so bytes after the
      * envelope are refused, because on this surface there is nothing else they
-     * could belong to. The marker for an absent OWID, a single zero byte, is
-     * refused as well, because it carries no signature and only means anything
-     * inside a framed buffer.
+     * could belong to. The marker for an absent node, a single zero byte, is
+     * not an OWID, so it is reported as ParseStatus::AbsentNode and no value
+     * is handed back.
      *
      * @param mixed $buffer the raw bytes, or anything a caller was handed
      */
@@ -138,10 +138,16 @@ final class Owid
      * reported as the consumed field of the result so a caller can advance to
      * the next.
      *
-     * This is the one surface that reports the marker for an absent OWID,
-     * because a frame that holds one is saying an optional OWID is not there,
-     * which a caller walking the frames has to be able to tell from a frame
-     * that is malformed.
+     * A frame holding the marker for an absent node reports
+     * ParseStatus::AbsentNode with no OWID and its one byte counted as
+     * consumed, so a caller adding consumed to its offset walks past the
+     * absent node to the next frame. That is the distinction the status
+     * exists to make, as an absent node is not a malformed frame.
+     *
+     * A frame whose declared payload runs past the bytes supplied is
+     * ParseStatus::UnexpectedEnd rather than a disagreement between the
+     * declaration and the bytes, because here the bytes may still be arriving
+     * and a caller has to be able to tell waiting for more from giving up.
      */
     public static function tryFromFrame(string $buffer, int $offset = 0): ParseResult
     {
@@ -184,22 +190,16 @@ final class Owid
         $at += 1;
 
         if ($version === Version::Empty) {
-            // The marker for an OWID that is not present carries no domain,
-            // date, payload or signature, so it can never verify, and handing
-            // one to a caller would be the single case of an instance with no
-            // signature reaching calling code, which is what the construction
-            // boundary exists to prevent. A whole buffer holding only the
-            // marker is therefore refused. It remains meaningful inside a
-            // framed buffer, where it stands for an optional OWID that is
-            // absent, so a framed read still reports it and consumes its one
-            // byte.
-            if ($exact) {
-                return ParseResult::failed(ParseStatus::UnsupportedVersion);
-            }
-            return ParseResult::parsed(
-                new self($version, '', Io::baseDate(), '', ''),
-                $at - $offset
-            );
+            // The marker for a node that is absent. It is not an OWID and no
+            // OWID is handed back, because it carries no domain, date, payload
+            // or signature and nothing mistakable for an identifier may reach
+            // calling code. It is not a fault either, so it is reported as
+            // itself rather than as an unknown version, and its one byte is
+            // counted so that a caller walking a run of frames steps over the
+            // absent node and reads the next one. The first byte settles this
+            // on either contract, since nothing after it can make the value an
+            // OWID.
+            return ParseResult::absentNode($at - $offset);
         }
 
         // The domain, terminated by a zero byte. Nothing declares its length,
@@ -403,8 +403,9 @@ final class Owid
     }
 
     /**
-     * Appends an empty OWID marker to the buffer. Used to indicate optional
-     * OWIDs in byte arrays.
+     * Appends the marker for a node that is absent to the buffer, which is how
+     * an optional OWID that is not present is written into a framed buffer. A
+     * read of that frame reports ParseStatus::AbsentNode.
      */
     public static function emptyToBuffer(string &$buffer): void
     {
@@ -570,8 +571,10 @@ final class Owid
         try {
             $data = $this->dataForCrypto($others);
         } catch (OwidException $e) {
-            // The fields of this OWID always encode, because it was parsed or
-            // created, so only an other that cannot be encoded reaches this.
+            // Every OWID encodes, because it was read or created and both
+            // routes bound every field, so nothing a caller can hold reaches
+            // this. It is kept because a check that cannot be made must have
+            // somewhere to go other than a signature that does not match.
             return SignatureStatus::VerificationError;
         }
         return $crypto->signatureStatus($data, $this->signature);

@@ -47,6 +47,21 @@ enum ParseStatus: string
     case Parsed = 'Parsed';
 
     /**
+     * The bytes are the marker for a node that is absent, a single zero byte,
+     * rather than an OWID. Version 0 is supported and meaningful, so this is
+     * not an unknown version, and the marker is not malformed either. It
+     * simply is not an identifier.
+     *
+     * No OWID is handed back, because the marker carries no domain, date,
+     * payload or signature and nothing mistakable for an identifier may reach
+     * calling code. The result still reports the one byte as consumed, so a
+     * caller walking a run of frames advances past the absent node and reads
+     * the next one, which is the distinction this status exists to make, as an
+     * absent node is not a malformed frame.
+     */
+    case AbsentNode = 'AbsentNode';
+
+    /**
      * Nothing was supplied to read, whether that is a null, an empty string or
      * a buffer of no bytes. Kept apart from UnexpectedEnd, which is data that
      * arrived and stopped part way through a field.
@@ -63,11 +78,9 @@ enum ParseStatus: string
     case InvalidBase64 = 'InvalidBase64';
 
     /**
-     * The first byte names a version this implementation does not know, or it
-     * names the marker for an absent OWID where a whole one was expected. The
-     * marker carries no domain, date, payload or signature and so can never
-     * verify, and it means something only inside a framed buffer, where a
-     * framed read reports it rather than refusing it.
+     * The first byte names a version this implementation does not know. The
+     * marker for an absent node is not this, because version 0 is supported
+     * and meaningful, and is reported as AbsentNode.
      */
     case UnsupportedVersion = 'UnsupportedVersion';
 
