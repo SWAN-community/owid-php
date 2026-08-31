@@ -46,9 +46,10 @@ limit for the complete envelope.
 
 This library checks that the declared payload length agrees with the bytes
 present before it extracts the payload, and reports the disagreement as
-`ParseStatus::ByteCountMismatch`. A large declaration without the
-corresponding bytes is malformed and is rejected without allocating the
-declared size. A matching large payload is not malformed merely because it is
+`ParseStatus::ByteCountMismatch` on the whole buffer surfaces, or as
+`ParseStatus::UnexpectedEnd` on the framed one. A large declaration without
+the corresponding bytes is malformed and is rejected without allocating the
+declared size either way. A matching large payload is not malformed merely because it is
 large, and parsing work and memory use scale with the bytes actually present.
 
 The domain is read the same way. Because nothing declares its length, the
