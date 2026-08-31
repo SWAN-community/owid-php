@@ -23,6 +23,7 @@ namespace SwanCommunity\Owid\Tests;
 use PHPUnit\Framework\TestCase;
 use SwanCommunity\Owid\Crypto;
 use SwanCommunity\Owid\OwidException;
+use SwanCommunity\Owid\SignatureStatus;
 
 /**
  * Tests the crypto operations, the DER to raw signature conversion, and the
@@ -122,6 +123,53 @@ final class CryptoTest extends TestCase
         } catch (OwidException $e) {
             $this->assertStringContainsString('private key PEM is empty', $e->getMessage());
         }
+    }
+
+    /**
+     * Key material that cannot be read answers with null rather than raising,
+     * so a caller handed an unusable key from a well known end point can
+     * report it as a fault in the key instead of as a forgery.
+     */
+    public function testTryVerifyOnlyAnswersWithNull(): void
+    {
+        $unusable = ['', '   ', 'not a pem', "-----BEGIN PUBLIC KEY-----" . PHP_EOL];
+        foreach ($unusable as $pem) {
+            $this->assertNull(
+                Crypto::tryVerifyOnly($pem),
+                'unusable key material should not make an instance'
+            );
+        }
+
+        $crypto = Crypto::new();
+        $this->assertNotNull(Crypto::tryVerifyOnly($crypto->publicKeyPem()));
+    }
+
+    /**
+     * The status of a signature check keeps a signature that does not match
+     * apart from a check that could not be made, so an operational fault is
+     * never reported as an attack.
+     */
+    public function testSignatureStatusSeparatesTheOutcomes(): void
+    {
+        $crypto = Crypto::new();
+        $signature = $crypto->signByteArray(self::TEST_PAYLOAD);
+        $verifier = Crypto::newVerifyOnly($crypto->publicKeyPem());
+
+        $this->assertSame(
+            SignatureStatus::SignatureValid,
+            $verifier->signatureStatus(self::TEST_PAYLOAD, $signature)
+        );
+        $this->assertSame(
+            SignatureStatus::SignatureInvalid,
+            $verifier->signatureStatus('other data', $signature)
+        );
+        $this->assertSame(
+            SignatureStatus::InvalidSignatureLength,
+            $verifier->signatureStatus(
+                self::TEST_PAYLOAD,
+                substr($signature, 0, 63)
+            )
+        );
     }
 
     /**

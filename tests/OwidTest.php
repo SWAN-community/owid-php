@@ -24,6 +24,7 @@ use PHPUnit\Framework\TestCase;
 use SwanCommunity\Owid\Crypto;
 use SwanCommunity\Owid\Creator;
 use SwanCommunity\Owid\Owid;
+use SwanCommunity\Owid\ParseStatus;
 use SwanCommunity\Owid\Version;
 
 /**
@@ -40,13 +41,13 @@ final class OwidTest extends TestCase
     {
         $crypto = Crypto::new();
         $creator = new Creator('example.com', $crypto);
-        $owid = $creator->signString('Hello World');
+        $owid = $creator->create('Hello World');
         $this->assertSame('example.com', $owid->domain);
         $this->assertSame(Version::Version3, $owid->version);
         $this->assertSame(64, strlen($owid->signature));
         $this->assertTrue($owid->verifyWithCrypto($crypto), 'should verify with crypto');
 
-        $copy = Owid::fromBase64($owid->asBase64());
+        $copy = Fixtures::parseBase64($owid->asBase64());
         $this->assertSame($owid->payload, $copy->payload);
         $this->assertTrue(
             $copy->verifyWithPublicKey($crypto->publicKeyPem()),
@@ -55,20 +56,27 @@ final class OwidTest extends TestCase
     }
 
     /**
-     * A tampered copy of a locally signed OWID fails to verify.
+     * A signed OWID whose serialized bytes are tampered with still reads back
+     * as a structurally valid OWID and then fails to verify. The tampering is
+     * done to the bytes rather than to the OWID because the fields are read
+     * only, and because bytes are how tampering actually reaches a verifier.
      */
-    public function testTamperedCopyFails(): void
+    public function testTamperedBytesParseThenFailVerification(): void
     {
         $crypto = Crypto::new();
         $creator = new Creator('example.com', $crypto);
-        $owid = $creator->signString('Hello World');
+        $owid = $creator->create('Hello World');
         $bytes = $owid->asByteArray();
         $last = strlen($bytes) - 1;
         $bytes[$last] = chr(ord($bytes[$last]) ^ 0xFF);
-        $tampered = Owid::fromByteArray($bytes);
+
+        $result = Owid::tryFromByteArray($bytes);
+
+        $this->assertTrue($result->ok, 'flipping a signature byte leaves the envelope readable');
+        $this->assertSame(ParseStatus::Parsed, $result->status);
         $this->assertFalse(
-            $tampered->verifyWithCrypto($crypto),
-            'tampered OWID should not verify'
+            $result->owid->verifyWithCrypto($crypto),
+            'and the signature is then found not to match'
         );
     }
 
@@ -80,10 +88,8 @@ final class OwidTest extends TestCase
     {
         $crypto = Crypto::new();
         $creator = new Creator('example.com', $crypto);
-        $root = $creator->signString('root');
-        $party = new Owid();
-        $party->payload = 'party';
-        $creator->signWithOthers($party, [$root]);
+        $root = $creator->create('root');
+        $party = $creator->create('party', [$root]);
 
         $this->assertTrue($root->verifyWithCrypto($crypto), 'root verifies alone');
         $this->assertTrue(
@@ -101,8 +107,9 @@ final class OwidTest extends TestCase
      */
     public function testPayloadAccessors(): void
     {
-        $owid = new Owid();
-        $owid->payload = "\x01\x03";
+        $owid = (new Creator('example.com', Crypto::new()))
+            ->create("\x01\x03");
+
         $this->assertSame("\x01\x03", $owid->payloadAsString());
         $this->assertSame('0103', $owid->payloadAsPrintable());
         $this->assertSame('AQM=', $owid->payloadAsBase64());
@@ -115,8 +122,8 @@ final class OwidTest extends TestCase
     {
         $crypto = Crypto::new();
         $creator = new Creator('example.com', $crypto);
-        $owid = $creator->signString(Fixtures::UTF8_PAYLOAD);
-        $copy = Owid::fromBase64($owid->asBase64());
+        $owid = $creator->create(Fixtures::UTF8_PAYLOAD);
+        $copy = Fixtures::parseBase64($owid->asBase64());
         $this->assertSame(Fixtures::UTF8_PAYLOAD, $copy->payloadAsString());
         $this->assertTrue($copy->verifyWithCrypto($crypto));
     }
@@ -128,7 +135,7 @@ final class OwidTest extends TestCase
     {
         $crypto = Crypto::new();
         $creator = new Creator('example.com', $crypto);
-        $owid = $creator->signString('value');
+        $owid = $creator->create('value');
         $this->assertSame($owid->asBase64(), (string) $owid);
     }
 
@@ -139,7 +146,7 @@ final class OwidTest extends TestCase
     {
         $crypto = Crypto::new();
         $creator = new Creator('example.com', $crypto);
-        $owid = $creator->signString('value');
+        $owid = $creator->create('value');
         $this->assertGreaterThanOrEqual(0, $owid->ageMinutes());
         $this->assertLessThanOrEqual(1, $owid->ageMinutes());
     }

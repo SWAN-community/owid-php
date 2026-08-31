@@ -21,7 +21,9 @@ declare(strict_types=1);
 namespace SwanCommunity\Owid\Tests;
 
 use PHPUnit\Framework\TestCase;
-use SwanCommunity\Owid\OwidException;
+use SwanCommunity\Owid\ParseStatus;
+use SwanCommunity\Owid\Creator;
+use SwanCommunity\Owid\Crypto;
 use SwanCommunity\Owid\Owid;
 use SwanCommunity\Owid\Version;
 
@@ -46,7 +48,7 @@ final class WireFormatTest extends TestCase
         foreach ($vectors as $name => $value) {
             $bytes = base64_decode($value, true);
             $this->assertNotFalse($bytes, "vector $name should decode");
-            $owid = Owid::fromByteArray($bytes);
+            $owid = Fixtures::parseBytes($bytes);
             $this->assertSame(
                 bin2hex($bytes),
                 bin2hex($owid->asByteArray()),
@@ -60,7 +62,7 @@ final class WireFormatTest extends TestCase
      */
     public function testCreatorVectorFields(): void
     {
-        $owid = Owid::fromBase64(Fixtures::CANONICAL_CREATOR);
+        $owid = Fixtures::parseBase64(Fixtures::CANONICAL_CREATOR);
         $this->assertSame('51db.uk', $owid->domain);
         $this->assertSame(Version::Version2, $owid->version);
         $this->assertSame(341, strlen($owid->payload));
@@ -76,7 +78,7 @@ final class WireFormatTest extends TestCase
      */
     public function testSupplierVectorPayloadForms(): void
     {
-        $owid = Owid::fromBase64(Fixtures::CANONICAL_SUPPLIER);
+        $owid = Fixtures::parseBase64(Fixtures::CANONICAL_SUPPLIER);
         $this->assertSame('pop-up.swan-demo.uk', $owid->domain);
         $this->assertSame("\x01\x03", $owid->payload);
         $this->assertSame('0103', $owid->payloadAsPrintable());
@@ -88,7 +90,7 @@ final class WireFormatTest extends TestCase
      */
     public function testBadVectorParses(): void
     {
-        $owid = Owid::fromBase64(Fixtures::CANONICAL_BAD);
+        $owid = Fixtures::parseBase64(Fixtures::CANONICAL_BAD);
         $this->assertSame('badssp.swan-demo.uk', $owid->domain);
         $this->assertSame(64, strlen($owid->signature));
     }
@@ -98,10 +100,10 @@ final class WireFormatTest extends TestCase
      */
     public function testDecodeAcceptsPaddedAndUnpadded(): void
     {
-        $padded = Owid::fromBase64(Fixtures::CANONICAL_SUPPLIER . '');
+        $padded = Fixtures::parseBase64(Fixtures::CANONICAL_SUPPLIER . '');
         $reEncoded = $padded->asBase64();
         $this->assertStringEndsWith('=', $reEncoded, 'encoding always pads');
-        $fromPadded = Owid::fromBase64($reEncoded);
+        $fromPadded = Fixtures::parseBase64($reEncoded);
         $this->assertSame(
             bin2hex($padded->asByteArray()),
             bin2hex($fromPadded->asByteArray())
@@ -109,35 +111,76 @@ final class WireFormatTest extends TestCase
     }
 
     /**
-     * An empty OWID marker is a single zero byte and reads back as the empty
-     * version.
+     * The marker for a node that is absent is a single zero byte, and reading
+     * a whole buffer holding one reports it as an absent node and hands back
+     * no OWID. The marker carries no domain, date, payload or signature, so it
+     * can never verify, and reading one as an OWID would hand a caller the one
+     * kind of instance that has no signature. It is not an unknown version
+     * either, because version 0 is supported and meaningful.
      */
-    public function testEmptyOwidMarker(): void
+    public function testEmptyOwidMarkerIsRefusedAsAWholeBuffer(): void
     {
         $buffer = '';
         Owid::emptyToBuffer($buffer);
         $this->assertSame("\x00", $buffer);
-        $owid = Owid::fromByteArray($buffer);
-        $this->assertSame(Version::Empty, $owid->version);
+
+        $result = Owid::tryFromByteArray($buffer);
+
+        $this->assertFalse($result->ok);
+        $this->assertNull($result->owid);
+        $this->assertSame(ParseStatus::AbsentNode, $result->status);
     }
 
     /**
-     * An unknown version byte is rejected.
+     * A framed buffer whose first frame is the marker reports an absent node,
+     * hands back no OWID, counts its one byte, and leaves the OWID that
+     * follows to be read next. A caller walking the frames can therefore tell
+     * an absent node from a frame that is malformed.
      */
-    public function testUnknownVersionRejected(): void
+    public function testEmptyOwidMarkerIsReadWhenFramed(): void
     {
-        $this->expectException(OwidException::class);
-        Owid::fromByteArray("\x09rest");
+        $owid = (new Creator('example.com', Crypto::new()))->create('value');
+        $buffer = '';
+        Owid::emptyToBuffer($buffer);
+        $buffer .= $owid->asByteArray();
+
+        $marker = Owid::tryFromFrame($buffer);
+        $this->assertFalse($marker->ok, 'an absent node is not a value');
+        $this->assertNull($marker->owid);
+        $this->assertSame(ParseStatus::AbsentNode, $marker->status);
+        $this->assertSame(1, $marker->consumed);
+
+        $next = Owid::tryFromFrame($buffer, $marker->consumed);
+        $this->assertTrue($next->ok);
+        $this->assertSame('value', $next->owid->payloadAsString());
     }
 
     /**
-     * A truncated buffer is rejected.
+     * An unknown version byte is reported rather than raised, and nothing is
+     * handed back to read.
      */
-    public function testTruncatedBufferRejected(): void
+    public function testUnknownVersionReported(): void
+    {
+        $result = Owid::tryFromByteArray("\x09rest");
+
+        $this->assertFalse($result->ok);
+        $this->assertNull($result->owid);
+        $this->assertSame(ParseStatus::UnsupportedVersion, $result->status);
+    }
+
+    /**
+     * A buffer that stops inside the envelope is reported as data that ended
+     * early, and nothing is handed back to read.
+     */
+    public function testTruncatedBufferReported(): void
     {
         $bytes = base64_decode(Fixtures::CANONICAL_SUPPLIER, true);
         $this->assertNotFalse($bytes);
-        $this->expectException(OwidException::class);
-        Owid::fromByteArray(substr($bytes, 0, 10));
+
+        $result = Owid::tryFromByteArray(substr($bytes, 0, 10));
+
+        $this->assertFalse($result->ok);
+        $this->assertNull($result->owid);
+        $this->assertSame(ParseStatus::UnexpectedEnd, $result->status);
     }
 }

@@ -23,7 +23,6 @@ namespace SwanCommunity\Owid\Tests;
 use PHPUnit\Framework\TestCase;
 use SwanCommunity\Owid\Crypto;
 use SwanCommunity\Owid\Creator;
-use SwanCommunity\Owid\Owid;
 use SwanCommunity\Owid\OwidException;
 use SwanCommunity\Owid\Version;
 
@@ -33,40 +32,48 @@ use SwanCommunity\Owid\Version;
 final class CreatorTest extends TestCase
 {
     /**
-     * Signing sets the domain, the current version, and a 64 byte signature.
+     * Creating sets the domain, the current version, and a 64 byte signature,
+     * so what the caller receives is finished rather than waiting to be
+     * signed.
      */
-    public function testSignSetsFields(): void
+    public function testCreateSetsFields(): void
     {
         $creator = new Creator('example.com', Crypto::new());
-        $owid = $creator->signString('Hello World');
+
+        $owid = $creator->create('Hello World');
+
         $this->assertSame('example.com', $owid->domain);
         $this->assertSame(Version::Version3, $owid->version);
         $this->assertSame(64, strlen($owid->signature));
     }
 
     /**
-     * Signing overwrites whatever domain and version the OWID started with.
+     * A payload of raw bytes is carried unchanged, because a PHP string is a
+     * byte array and creation makes no distinction between text and bytes.
      */
-    public function testSignOverwritesDomainAndVersion(): void
+    public function testCreateCarriesRawBytes(): void
     {
+        $payload = "\x00\xFF\x10 text";
         $creator = new Creator('example.com', Crypto::new());
-        $owid = new Owid('other.com');
-        $owid->version = Version::Version1;
-        $owid->payload = 'value';
-        $creator->sign($owid);
-        $this->assertSame('example.com', $owid->domain);
-        $this->assertSame(Version::Version3, $owid->version);
+
+        $owid = $creator->create($payload);
+
+        $this->assertSame($payload, $owid->payload);
     }
 
     /**
-     * The bytes accessor returns the same payload as the string accessor.
+     * There is no public way to sign an OWID that already exists, because
+     * there is nothing outside to sign and re-signing one would replace a
+     * signature its fields were read with.
      */
-    public function testSignBytesMatchesSignString(): void
+    public function testNoPublicSigningSurface(): void
     {
-        $creator = new Creator('example.com', Crypto::new());
-        $fromString = $creator->signString('value');
-        $fromBytes = $creator->signBytes('value');
-        $this->assertSame($fromString->payload, $fromBytes->payload);
+        foreach (['sign', 'signWithOthers', 'signString', 'signBytes'] as $gone) {
+            $this->assertFalse(
+                method_exists(Creator::class, $gone),
+                "Creator::$gone must not exist"
+            );
+        }
     }
 
     /**
@@ -96,7 +103,7 @@ final class CreatorTest extends TestCase
     {
         $crypto = Crypto::new();
         $creator = Creator::fromConfiguration('example.com', $crypto->privateKeyPem());
-        $owid = $creator->signString('value');
+        $owid = $creator->create('value');
         $this->assertSame('example.com', $creator->domain());
         $this->assertTrue($owid->verifyWithPublicKey($crypto->publicKeyPem()));
     }

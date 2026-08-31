@@ -27,23 +27,52 @@ use SwanCommunity\Owid\OwidException;
 use SwanCommunity\Owid\Version;
 
 /**
- * Tests the low level binary read and write helpers.
+ * Tests the low level write helpers and the base date the format counts from.
+ *
+ * Each field is written and then read back through a complete envelope,
+ * because reading is done by the parser in Owid rather than by a helper here,
+ * and reading one field on its own is not something a caller can do.
  */
 final class IoTest extends TestCase
 {
+    /** The length of the fixed tail every valid OWID ends with. */
+    private const SIGNATURE_LENGTH = 64;
+
     /**
-     * A date written and read with the version 2 encoding keeps the same
-     * minute count.
+     * An envelope of the version given, carrying the domain, date and payload
+     * given, so a written field can be read back the way a caller reads one.
      */
-    public function testDateRoundTripVersion2(): void
+    private static function envelope(
+        Version $version,
+        string $domain,
+        DateTimeImmutable $date,
+        string $payload
+    ): string {
+        $buffer = '';
+        Io::writeByte($buffer, $version->asByte());
+        Io::writeString($buffer, $domain);
+        Io::writeDate($buffer, $date, $version);
+        Io::writeByteArray($buffer, $payload);
+        return $buffer . str_repeat("\x99", self::SIGNATURE_LENGTH);
+    }
+
+    /**
+     * A date written and read with the version 3 encoding keeps the same
+     * minute count in four bytes.
+     */
+    public function testDateRoundTripVersion3(): void
     {
         $date = new DateTimeImmutable('now');
         $buffer = '';
-        Io::writeDate($buffer, $date, Version::Version2);
-        $this->assertSame(4, strlen($buffer), 'version 2 uses four bytes');
-        $result = (new Io($buffer))->readDate(Version::Version2);
+        Io::writeDate($buffer, $date, Version::Version3);
+        $this->assertSame(4, strlen($buffer), 'version 3 uses four bytes');
+
+        $owid = Fixtures::parseBytes(
+            self::envelope(Version::Version3, 'example.com', $date, '')
+        );
+
         $expected = intdiv($date->getTimestamp() - Io::BASE_TIMESTAMP, 60);
-        $actual = intdiv($result->getTimestamp() - Io::BASE_TIMESTAMP, 60);
+        $actual = intdiv($owid->date->getTimestamp() - Io::BASE_TIMESTAMP, 60);
         $this->assertSame($expected, $actual, 'should keep the same minute count');
     }
 
@@ -57,10 +86,14 @@ final class IoTest extends TestCase
         $buffer = '';
         Io::writeDate($buffer, $date, Version::Version1);
         $this->assertSame(2, strlen($buffer), 'version 1 uses two bytes');
-        $result = (new Io($buffer))->readDate(Version::Version1);
+
+        $owid = Fixtures::parseBytes(
+            self::envelope(Version::Version1, 'example.com', $date, '')
+        );
+
         $this->assertSame(
             $date->format('Y-m-d H:i'),
-            $result->format('Y-m-d H:i'),
+            $owid->date->format('Y-m-d H:i'),
             'should keep hour granularity'
         );
     }
@@ -83,9 +116,20 @@ final class IoTest extends TestCase
     {
         $buffer = '';
         Io::writeString($buffer, 'example.com');
-        $this->assertSame("\x00", $buffer[strlen($buffer) - 1], 'should be null terminated');
-        $result = (new Io($buffer))->readString();
-        $this->assertSame('example.com', $result);
+        $this->assertSame(
+            "\x00",
+            $buffer[strlen($buffer) - 1],
+            'should be null terminated'
+        );
+
+        $owid = Fixtures::parseBytes(self::envelope(
+            Version::Version3,
+            'example.com',
+            new DateTimeImmutable('now'),
+            ''
+        ));
+
+        $this->assertSame('example.com', $owid->domain);
     }
 
     /**
@@ -106,7 +150,6 @@ final class IoTest extends TestCase
         $buffer = '';
         Io::writeUint32($buffer, 0x0A242B01);
         $this->assertSame("\x01\x2B\x24\x0A", $buffer, 'should be little endian');
-        $this->assertSame(0x0A242B01, (new Io($buffer))->readUint32(), 'should round trip');
     }
 
     /**
@@ -117,19 +160,27 @@ final class IoTest extends TestCase
         $payload = "\x01\x02\x03\x04\x05";
         $buffer = '';
         Io::writeByteArray($buffer, $payload);
-        $reader = new Io($buffer);
-        $this->assertSame($payload, $reader->readByteArray());
+        $this->assertSame("\x05\x00\x00\x00" . $payload, $buffer);
+
+        $owid = Fixtures::parseBytes(self::envelope(
+            Version::Version3,
+            'example.com',
+            new DateTimeImmutable('now'),
+            $payload
+        ));
+
+        $this->assertSame($payload, $owid->payload);
     }
 
     /**
-     * Reading past the end of the buffer raises an error.
+     * A signature that is not the fixed length can not be written, so the
+     * library cannot produce an envelope whose tail it would then refuse.
      */
-    public function testReadPastEndRejected(): void
+    public function testSignatureLengthEnforcedOnWrite(): void
     {
-        $reader = new Io("\x01");
-        $reader->readByte();
+        $buffer = '';
         $this->expectException(OwidException::class);
-        $reader->readByte();
+        Io::writeSignature($buffer, str_repeat("\x99", 63));
     }
 
     /**

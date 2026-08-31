@@ -64,17 +64,7 @@ enum Version: int
         return $this->value;
     }
 
-    /**
-     * Returns the version for the byte provided.
-     *
-     * @throws OwidException when the byte is not a known version.
-     */
-    public static function fromByte(int $value): self
-    {
-        $version = self::tryFrom($value);
-        if ($version === null) {
-            throw OwidException::unsupportedVersion($value);
-        }
-        return $version;
-    }
+    // A byte that names no version is reported by the parser as the
+    // UnsupportedVersion status rather than raised, so the enum's own
+    // tryFrom is all the reader needs and there is no throwing lookup here.
 }

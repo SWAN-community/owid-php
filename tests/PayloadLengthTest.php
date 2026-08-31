@@ -26,13 +26,14 @@ use SwanCommunity\Owid\Crypto;
 use SwanCommunity\Owid\Io;
 use SwanCommunity\Owid\Owid;
 use SwanCommunity\Owid\OwidException;
+use SwanCommunity\Owid\ParseStatus;
 use SwanCommunity\Owid\Version;
 
 /**
  * The payload length field of an OWID is whatever the sender declared, so
- * parsing must check it against the bytes present before sizing anything by
- * it. These tests prove that a declared length that does not leave a complete
- * signature after the payload is refused, that refusing it costs nothing
+ * reading must check it against the bytes present before sizing anything by
+ * it. These tests prove that a declared length which does not leave exactly
+ * the signature after the payload is refused, that refusing it costs nothing
  * sized by the declared number, and that a correctly sized envelope still
  * parses. The 64 byte signature is the fixed tail every valid OWID ends with.
  */
@@ -45,9 +46,9 @@ final class PayloadLengthTest extends TestCase
 
     /**
      * A version 3 envelope, being the version byte, the domain with its
-     * terminator, four minute bytes, the declared payload length, the
-     * payload bytes given and the signature bytes given, so a test can make
-     * the declared length and the bytes present disagree.
+     * terminator, four minute bytes, the declared payload length, the payload
+     * bytes given and the signature bytes given, so a test can make the
+     * declared length and the bytes present disagree.
      */
     private static function envelope(
         int $declaredLength,
@@ -74,29 +75,30 @@ final class PayloadLengthTest extends TestCase
     }
 
     /**
-     * Parses the bytes expecting a refusal and returns the message, so a
-     * test can check what the message names. Every refusal must use the
-     * library's own exception type, and a parse that is accepted fails the
-     * test.
+     * Reads the bytes expecting a refusal and returns the reason, so a test
+     * can say which of the expected problems it was. Every part of a refusal
+     * is asserted here, being that nothing was raised, that the read reports
+     * it did not work, and that no value was handed back. A read that succeeds
+     * fails the test.
      */
-    private function refusal(string $bytes, string $label): string
+    private function refusal(string $bytes, string $label): ParseStatus
     {
-        try {
-            Owid::fromByteArray($bytes);
-        } catch (OwidException $e) {
-            $this->addToAssertionCount(1);
-            return $e->getMessage();
+        $result = Owid::tryFromByteArray($bytes);
+        if ($result->ok) {
+            $this->fail("$label should have been refused");
         }
-        $this->fail("$label should have been refused");
+        $this->assertNull($result->owid, "$label should hand back no value");
+        $this->assertSame(0, $result->consumed, "$label should consume nothing");
+        return $result->status;
     }
 
     /**
-     * The declared length matches the bytes present, the signature is the
-     * last 64 bytes, and the envelope parses to the same payload.
+     * The declared length matches the bytes present, the signature is the last
+     * 64 bytes, and the envelope parses to the same payload.
      */
     public function testDeclaredLengthMatchesParses(): void
     {
-        $owid = Owid::fromByteArray(self::envelope(
+        $owid = Fixtures::parseBytes(self::envelope(
             self::PAYLOAD_LENGTH,
             self::payload(),
             self::signature()
@@ -115,7 +117,7 @@ final class PayloadLengthTest extends TestCase
     {
         $payload = str_repeat("\x5A", 1024 * 1024);
 
-        $owid = Owid::fromByteArray(self::envelope(
+        $owid = Fixtures::parseBytes(self::envelope(
             strlen($payload),
             $payload,
             self::signature()
@@ -132,8 +134,8 @@ final class PayloadLengthTest extends TestCase
     {
         $crypto = Crypto::new();
         $creator = new Creator('51d.es', $crypto);
-        $original = $creator->signBytes(self::payload());
-        $parsed = Owid::fromByteArray($original->asByteArray());
+        $original = $creator->create(self::payload());
+        $parsed = Fixtures::parseBytes($original->asByteArray());
         $this->assertSame(self::payload(), $parsed->payload);
         $this->assertTrue(
             $parsed->verifyWithCrypto($crypto),
@@ -142,16 +144,19 @@ final class PayloadLengthTest extends TestCase
     }
 
     /**
-     * One more or one fewer than the bytes present is refused, because
-     * either overruns the payload or leaves bytes after the top-level value.
+     * One more or one fewer than the bytes present is refused, because either
+     * overruns the payload or leaves bytes after the top-level value.
      */
     public function testDeclaredLengthOffByOneIsRefused(): void
     {
         $declaredLengths = [self::PAYLOAD_LENGTH - 1, self::PAYLOAD_LENGTH + 1];
         foreach ($declaredLengths as $declared) {
-            $this->refusal(
-                self::envelope($declared, self::payload(), self::signature()),
-                "declared $declared"
+            $this->assertSame(
+                ParseStatus::ByteCountMismatch,
+                $this->refusal(
+                    self::envelope($declared, self::payload(), self::signature()),
+                    "declared $declared"
+                )
             );
         }
     }
@@ -167,13 +172,19 @@ final class PayloadLengthTest extends TestCase
             self::payload(),
             self::signature()
         );
-        $this->refusal($bytes . "\x00", 'trailing byte');
+
+        $this->assertSame(
+            ParseStatus::ByteCountMismatch,
+            $this->refusal($bytes . "\x00", 'trailing byte')
+        );
     }
 
     /**
-     * A short signature is refused. The declared payload length is right for
-     * the payload, but the bytes after it are fewer than a signature. The
-     * message names the bytes present, one short of payload and signature.
+     * A short signature is refused as a disagreement between the declaration
+     * and the bytes rather than as data that stopped early. The declared
+     * payload length is right for the payload, but what follows it is fewer
+     * bytes than a signature, so the declared payload cannot leave exactly the
+     * signature the version requires.
      */
     public function testShortSignatureIsRefused(): void
     {
@@ -182,35 +193,37 @@ final class PayloadLengthTest extends TestCase
             self::payload(),
             self::signature(self::SIGNATURE_LENGTH - 1)
         );
-        $message = $this->refusal($bytes, '63 byte signature');
-        $present = self::PAYLOAD_LENGTH + self::SIGNATURE_LENGTH - 1;
-        $this->assertStringContainsString("'$present'", $message);
+
+        $this->assertSame(
+            ParseStatus::ByteCountMismatch,
+            $this->refusal($bytes, '63 byte signature')
+        );
     }
 
     /**
      * A large declaration whose payload bytes are absent is refused without
-     * anything sized by the declared number. PHP cannot count allocations
-     * per call, so the envelope of a few dozen bytes that declares 64 MiB,
-     * then 2 GiB, then the largest unsigned 32 bit value while carrying none
-     * of those bytes is parsed 1,000 times each. The numeric values remain
-     * valid when the matching payload is present. The attempts must finish
-     * well inside a second, which a parse that sized a buffer by the
-     * declaration could not do. Where the runtime
-     * can reset its peak memory figure (PHP 8.2 and later) the peak during
-     * one refusal must also stay under 64 KiB above the level before it.
+     * anything sized by the declared number. PHP cannot count allocations per
+     * call, so the envelope of a few dozen bytes that declares 64 MiB, then
+     * 2 GiB, then the largest unsigned 32 bit value while carrying none of
+     * those bytes is read 1,000 times each. The numeric values remain valid
+     * when the matching payload is present. The attempts must finish well
+     * inside a second, which a read that sized a buffer by the declaration
+     * could not do. Where the runtime can reset its peak memory figure
+     * (PHP 8.2 and later) the peak during one refusal must also stay under
+     * 64 KiB above the level before it.
      */
     public function testMismatchedLargeDeclarationIsRefusedQuickly(): void
     {
         $declaredLengths = [64 * 1024 * 1024, 0x7FFFFFFF, 0xFFFFFFFF];
         foreach ($declaredLengths as $declared) {
             $bytes = self::envelope($declared, '', '');
-            $message = '';
+            $status = null;
             $start = hrtime(true);
             for ($attempt = 0; $attempt < 1000; $attempt++) {
-                $message = $this->refusal($bytes, "declared $declared");
+                $status = $this->refusal($bytes, "declared $declared");
             }
             $elapsed = (hrtime(true) - $start) / 1e9;
-            $this->assertStringContainsString("'$declared'", $message);
+            $this->assertSame(ParseStatus::ByteCountMismatch, $status);
             $this->assertLessThan(
                 1.0,
                 $elapsed,
@@ -232,20 +245,21 @@ final class PayloadLengthTest extends TestCase
 
     /**
      * An empty payload, declared length zero, followed by the signature is a
-     * valid OWID and parses.
+     * valid OWID and parses. Having nothing to say is allowed.
      */
     public function testEmptyPayloadParses(): void
     {
-        $owid = Owid::fromByteArray(self::envelope(0, '', self::signature()));
+        $owid = Fixtures::parseBytes(self::envelope(0, '', self::signature()));
         $this->assertSame('', $owid->payload);
         $this->assertSame(self::signature(), $owid->signature);
     }
 
     /**
-     * The public reader consumes one OWID and leaves following framed bytes;
-     * the byte-array entry point remains strict about EOF.
+     * The framed reader consumes one OWID and leaves the following envelope
+     * for the next read, reporting how many bytes this one occupied, while the
+     * byte array entry point stays strict about the end of the buffer.
      */
-    public function testFromReaderLeavesFollowingEnvelopeUnread(): void
+    public function testFramedReadLeavesFollowingEnvelopeUnread(): void
     {
         $firstBytes = self::envelope(
             self::PAYLOAD_LENGTH,
@@ -253,14 +267,57 @@ final class PayloadLengthTest extends TestCase
             self::signature()
         );
         $secondBytes = self::envelope(0, '', self::signature());
-        $reader = new Io($firstBytes . $secondBytes);
+        $buffer = $firstBytes . $secondBytes;
 
-        $first = Owid::fromReader($reader);
-        $this->assertSame(self::payload(), $first->payload);
-        $this->assertSame(strlen($secondBytes), $reader->remaining());
+        $first = Owid::tryFromFrame($buffer);
+        $this->assertTrue($first->ok, 'the first envelope should read');
+        $this->assertSame(self::payload(), $first->owid->payload);
+        $this->assertSame(strlen($firstBytes), $first->consumed);
 
-        $second = Owid::fromReader($reader);
-        $this->assertSame('', $second->payload);
-        $this->assertSame(0, $reader->remaining());
+        $second = Owid::tryFromFrame($buffer, $first->consumed);
+        $this->assertTrue($second->ok, 'the second envelope should read');
+        $this->assertSame('', $second->owid->payload);
+        $this->assertSame(
+            strlen($buffer),
+            $first->consumed + $second->consumed,
+            'the two envelopes should account for the whole buffer'
+        );
+
+        $this->assertSame(
+            ParseStatus::ByteCountMismatch,
+            $this->refusal($buffer, 'two envelopes on the exact surface')
+        );
+    }
+
+    /**
+     * A framed read of an envelope that stops early is data that ended rather
+     * than a declaration that disagrees, because what follows a framed
+     * envelope may be the next one, so the reader cannot say the bytes are
+     * wrong, only that they are not all here.
+     */
+    public function testFramedReadOfATruncatedEnvelopeEndsEarly(): void
+    {
+        $bytes = self::envelope(
+            self::PAYLOAD_LENGTH,
+            self::payload(),
+            self::signature()
+        );
+
+        $result = Owid::tryFromFrame(substr($bytes, 0, strlen($bytes) - 1));
+
+        $this->assertFalse($result->ok);
+        $this->assertNull($result->owid);
+        $this->assertSame(ParseStatus::UnexpectedEnd, $result->status);
+    }
+
+    /**
+     * The signature length and the greatest number of characters a domain name
+     * can hold are the bounds the reader works to, and both are published so a
+     * caller can size its own limits.
+     */
+    public function testPublishedBounds(): void
+    {
+        $this->assertSame(64, OwidException::SIGNATURE_LENGTH);
+        $this->assertSame(253, OwidException::MAXIMUM_DOMAIN_LENGTH);
     }
 }

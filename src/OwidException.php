@@ -23,9 +23,13 @@ namespace SwanCommunity\Owid;
 use Exception;
 
 /**
- * The single exception type raised when creating, reading, signing, or
- * verifying OWIDs. Each named constructor produces a clear message describing
- * what went wrong.
+ * The single exception type raised when writing, signing, or configuring a
+ * creator. Each named constructor produces a clear message describing what
+ * went wrong.
+ *
+ * Reading is not here. Bytes arriving from outside are read with the try
+ * methods on Owid, which report a ParseStatus, because data that is not an
+ * OWID is an ordinary outcome and not a fault in the program.
  */
 final class OwidException extends Exception
 {
@@ -47,7 +51,11 @@ final class OwidException extends Exception
     public const MAXIMUM_DOMAIN_LENGTH = 253;
 
     /**
-     * The version byte is not one supported by this implementation.
+     * The version has no encoding for the field being written. Only the marker
+     * for an absent node has none, as it carries no date, and no OWID can hold
+     * that version any more, so this is reached by a caller writing the format
+     * with the Io helpers directly. Reading reports an unknown version byte as
+     * a ParseStatus rather than raising.
      */
     public static function unsupportedVersion(int $version): self
     {
@@ -67,22 +75,6 @@ final class OwidException extends Exception
     }
 
     /**
-     * The buffer ended before all the expected fields were read.
-     */
-    public static function unexpectedEndOfBuffer(): self
-    {
-        return new self('buffer ended before the OWID was complete');
-    }
-
-    /**
-     * The base 64 string could not be decoded.
-     */
-    public static function base64(): self
-    {
-        return new self('base 64 decoding failed because the input is not valid');
-    }
-
-    /**
      * The domain is empty, or contains a null character which would conflict
      * with the null terminated string encoding.
      */
@@ -92,15 +84,11 @@ final class OwidException extends Exception
     }
 
     /**
-     * The domain is longer than the greatest number of characters a domain
-     * name can hold. Both halves of the library raise this, so both report
-     * the one condition the one way. On a read the domain field has no
-     * terminator within that many characters, so whatever the field holds
-     * runs past the bound, and on a write the value handed in is longer
-     * than the bound. The domain is not named because on a read the bytes
-     * are whatever the sender wrote and there may be no end to them, and
-     * because writeString cannot tell which of the two routes a value
-     * arrived by.
+     * The domain handed in for writing is longer than the greatest number of
+     * characters a domain name can hold. The same bound on a read is reported
+     * as ParseStatus::InvalidDomainEncoding instead, because bytes arriving
+     * from outside are data rather than a fault in the program. The domain is
+     * not named because a value that long says nothing useful in a log.
      */
     public static function domainTooLong(): self
     {
@@ -118,22 +106,6 @@ final class OwidException extends Exception
     {
         return new self(
             'date can not be stored in the encoding for the OWID version'
-        );
-    }
-
-    /**
-     * The declared payload length does not leave a complete signature after
-     * the payload. The declared value is whatever the sender wrote, so it is
-     * named alongside the bytes that were actually present.
-     */
-    public static function payloadLengthMismatch(
-        int $declared,
-        int $present
-    ): self {
-        $signature = self::SIGNATURE_LENGTH;
-        return new self(
-            "OWID payload length '$declared' exceeds the '$present' bytes " .
-            "present, which must also contain the '$signature' byte signature"
         );
     }
 

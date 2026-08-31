@@ -26,6 +26,7 @@ use SwanCommunity\Owid\Crypto;
 use SwanCommunity\Owid\Io;
 use SwanCommunity\Owid\Owid;
 use SwanCommunity\Owid\OwidException;
+use SwanCommunity\Owid\ParseStatus;
 use SwanCommunity\Owid\Version;
 
 /**
@@ -46,8 +47,6 @@ final class DomainLengthTest extends TestCase
      * Returns a domain of the length given, built from labels of no more than
      * 63 characters separated by dots so it is shaped like a real name rather
      * than one long run of letters.
-     *
-     * @throws OwidException when the arithmetic below builds the wrong length.
      */
     private static function domain(int $length): string
     {
@@ -69,9 +68,8 @@ final class DomainLengthTest extends TestCase
      * A version 3 envelope carrying the domain given, followed by a date, an
      * empty payload and the signature. The domain and its terminator are
      * appended here rather than through Io::writeString because these tests
-     * build domains the write side now refuses, and the point of them is
-     * what the read side does with such bytes when they arrive from
-     * somewhere else.
+     * build domains the write side refuses, and the point of them is what the
+     * read side does with such bytes when they arrive from somewhere else.
      */
     private static function envelope(string $domain): string
     {
@@ -84,19 +82,36 @@ final class DomainLengthTest extends TestCase
     }
 
     /**
-     * Parses the bytes expecting a refusal and returns the message, so a test
-     * can check what the message names. Every refusal must use the library's
-     * own exception type, and a parse that is accepted fails the test.
+     * Reads the bytes expecting a refusal and returns the reason. Nothing may
+     * be raised, the read must report that it did not work, and no value may
+     * be handed back. A read that succeeds fails the test.
      */
-    private function refusal(string $bytes, string $label): string
+    private function refusal(string $bytes, string $label): ParseStatus
+    {
+        $result = Owid::tryFromByteArray($bytes);
+        if ($result->ok) {
+            $this->fail("$label should have been refused");
+        }
+        $this->assertNull($result->owid, "$label should hand back no value");
+        return $result->status;
+    }
+
+    /**
+     * Returns true when the action raises the library's exception naming the
+     * greatest number of characters a domain name can hold, which is how the
+     * write side reports the same bound the read side works to.
+     */
+    private function refusalNamesMaximum(callable $action): bool
     {
         try {
-            Owid::fromByteArray($bytes);
+            $action();
         } catch (OwidException $e) {
-            $this->addToAssertionCount(1);
-            return $e->getMessage();
+            return str_contains(
+                $e->getMessage(),
+                "'" . OwidException::MAXIMUM_DOMAIN_LENGTH . "'"
+            );
         }
-        $this->fail("$label should have been refused");
+        return false;
     }
 
     /**
@@ -108,7 +123,7 @@ final class DomainLengthTest extends TestCase
         $domain = self::domain(OwidException::MAXIMUM_DOMAIN_LENGTH);
         $bytes = self::envelope($domain);
 
-        $owid = Owid::fromByteArray($bytes);
+        $owid = Fixtures::parseBytes($bytes);
 
         $this->assertSame($domain, $owid->domain);
         $this->assertSame(
@@ -120,30 +135,31 @@ final class DomainLengthTest extends TestCase
 
     /**
      * One character more than a domain name can hold is refused, even though
-     * the terminator is present, because the parse stops at the bound.
+     * the terminator is present, because the read stops at the bound and what
+     * runs past it cannot be a domain.
      */
     public function testDomainOneOverMaximumIsRefused(): void
     {
         $domain = self::domain(OwidException::MAXIMUM_DOMAIN_LENGTH + 1);
 
-        $message = $this->refusal(self::envelope($domain), 'over long domain');
-
-        $maximum = OwidException::MAXIMUM_DOMAIN_LENGTH;
-        $this->assertStringContainsString("'$maximum'", $message);
+        $this->assertSame(
+            ParseStatus::InvalidDomainEncoding,
+            $this->refusal(self::envelope($domain), 'over long domain')
+        );
     }
 
     /**
-     * Returns the seconds taken to refuse the bytes the number of times
-     * given, and puts the last refusal message into the reference given.
+     * Returns the seconds taken to refuse the bytes the number of times given,
+     * and puts the last reason into the reference given.
      */
     private function timeRefusals(
         string $bytes,
         int $attempts,
-        string &$message
+        ?ParseStatus &$status
     ): float {
         $start = hrtime(true);
         for ($attempt = 0; $attempt < $attempts; $attempt++) {
-            $message = $this->refusal($bytes, 'unterminated domain');
+            $status = $this->refusal($bytes, 'unterminated domain');
         }
         return (hrtime(true) - $start) / 1e9;
     }
@@ -153,26 +169,26 @@ final class DomainLengthTest extends TestCase
      * cost that does not grow with the buffer. PHP cannot count the bytes a
      * single call examines, so the proof is the time taken, and it is taken
      * twice over buffers sixteen times apart so the result does not depend on
-     * how fast the machine is. A search running to the end of the buffer
-     * costs sixteen times as much on the larger one, whereas a search
-     * stopping at the bound costs the same on both, so the larger is required
-     * to stay inside four times the smaller. The small allowance added to
-     * that limit absorbs timer noise, because at the bound both runs take
-     * only a few thousandths of a second. A plain ceiling on the larger run
-     * is kept as well, in the style of the payload length checks. The peak
-     * memory during one refusal is held to 64 KiB above the level before it,
-     * where the runtime can reset its peak figure, which is PHP 8.2 and
-     * later, so nothing is sized by the run of characters either.
+     * how fast the machine is. A search running to the end of the buffer costs
+     * sixteen times as much on the larger one, whereas a search stopping at
+     * the bound costs the same on both, so the larger is required to stay
+     * inside four times the smaller. The small allowance added to that limit
+     * absorbs timer noise, because at the bound both runs take only a few
+     * thousandths of a second. A plain ceiling on the larger run is kept as
+     * well, in the style of the payload length checks. The peak memory during
+     * one refusal is held to 64 KiB above the level before it, where the
+     * runtime can reset its peak figure, which is PHP 8.2 and later, so
+     * nothing is sized by the run of characters either.
      */
     public function testUnterminatedDomainIsRefusedWithoutReadingTheBuffer(): void
     {
         $prefix = chr(Version::Version3->asByte());
         $small = $prefix . str_repeat('a', 1024 * 1024);
         $large = $prefix . str_repeat('a', 16 * 1024 * 1024);
-        $message = '';
+        $status = null;
 
-        $smallSeconds = $this->timeRefusals($small, 1000, $message);
-        $largeSeconds = $this->timeRefusals($large, 1000, $message);
+        $smallSeconds = $this->timeRefusals($small, 1000, $status);
+        $largeSeconds = $this->timeRefusals($large, 1000, $status);
 
         $this->assertLessThan(
             4 * $smallSeconds + 0.05,
@@ -185,8 +201,7 @@ final class DomainLengthTest extends TestCase
             $largeSeconds,
             "unterminated domain took {$largeSeconds}s for 1,000 attempts"
         );
-        $maximum = OwidException::MAXIMUM_DOMAIN_LENGTH;
-        $this->assertStringContainsString("'$maximum'", $message);
+        $this->assertSame(ParseStatus::InvalidDomainEncoding, $status);
         if (function_exists('memory_reset_peak_usage')) {
             $before = memory_get_usage();
             memory_reset_peak_usage();
@@ -202,16 +217,19 @@ final class DomainLengthTest extends TestCase
 
     /**
      * A buffer holding only the version byte and characters filling the bound
-     * exactly, with no terminator after them, is refused rather than read as
-     * a domain, because the terminator has to be present within the bound and
-     * not merely absent from it.
+     * exactly, with no terminator after them, is data that stopped rather than
+     * a domain that cannot be valid, because everything read so far could
+     * still have been a domain had the buffer gone on.
      */
     public function testDomainFillingTheBoundWithNoTerminatorIsRefused(): void
     {
         $bytes = chr(Version::Version3->asByte()) .
             str_repeat('a', OwidException::MAXIMUM_DOMAIN_LENGTH);
 
-        $this->refusal($bytes, 'domain filling the bound');
+        $this->assertSame(
+            ParseStatus::UnexpectedEnd,
+            $this->refusal($bytes, 'domain filling the bound')
+        );
     }
 
     /**
@@ -224,106 +242,61 @@ final class DomainLengthTest extends TestCase
     public function testCreatorRefusesDomainOverMaximum(): void
     {
         $domain = self::domain(OwidException::MAXIMUM_DOMAIN_LENGTH + 1);
-        $maximum = OwidException::MAXIMUM_DOMAIN_LENGTH;
         $crypto = Crypto::new();
 
-        try {
-            new Creator($domain, $crypto);
-            $this->fail('over long creator domain should have been refused');
-        } catch (OwidException $e) {
-            $this->assertStringContainsString("'$maximum'", $e->getMessage());
-        }
-
-        try {
-            Creator::fromConfiguration($domain, $crypto->privateKeyPem());
-            $this->fail('over long configured domain should have been refused');
-        } catch (OwidException $e) {
-            $this->assertStringContainsString("'$maximum'", $e->getMessage());
-        }
+        $this->assertTrue($this->refusalNamesMaximum(
+            fn () => new Creator($domain, $crypto)
+        ), 'the creator should refuse the domain');
+        $this->assertTrue($this->refusalNamesMaximum(
+            fn () => Creator::fromConfiguration($domain, $crypto->privateKeyPem())
+        ), 'the configured creator should refuse the domain');
     }
 
     /**
-     * The serialization refuses the same domain as well, so a value that
-     * reached the public domain field by a route other than the creator is
-     * still refused. The data the signature is calculated over is built the
-     * same way, so the refusal reaches that too. A domain of exactly the
-     * greatest length is written and parses back unchanged, so this is a
-     * refusal at the top of the range and nothing else.
+     * The write side refuses the same domain, so this library cannot produce
+     * bytes it would then refuse to read. The check is made through the write
+     * helper directly because no OWID can carry such a domain any more: one
+     * arrives only by being read, which stops at the bound, or by being
+     * created, where the creator refuses it. A domain of exactly the greatest
+     * length is written and read back unchanged, so this is a refusal at the
+     * top of the range and nothing else.
      */
     public function testWriteRefusesDomainOverMaximum(): void
     {
         $maximum = OwidException::MAXIMUM_DOMAIN_LENGTH;
-        $owid = new Owid();
-        $owid->payload = 'value';
-        $owid->signature = str_repeat(chr(0x99), self::SIGNATURE_LENGTH);
 
-        $owid->domain = self::domain($maximum + 1);
-        foreach (['asByteArray', 'dataForCrypto'] as $method) {
-            try {
-                $owid->$method();
-                $this->fail("$method should have refused the long domain");
-            } catch (OwidException $e) {
-                $this->assertStringContainsString(
-                    "'$maximum'",
-                    $e->getMessage()
-                );
-            }
-        }
+        $this->assertTrue($this->refusalNamesMaximum(function () use ($maximum) {
+            $buffer = '';
+            Io::writeString($buffer, self::domain($maximum + 1));
+        }), 'writing an over long domain should be refused');
 
-        $owid->domain = self::domain($maximum);
-        $parsed = Owid::fromByteArray($owid->asByteArray());
-        $this->assertSame($owid->domain, $parsed->domain);
+        $atBound = self::domain($maximum);
+        $parsed = Fixtures::parseBytes(self::envelope($atBound));
+        $this->assertSame($atBound, $parsed->domain);
     }
 
     /**
      * The refusal happens before any signature is calculated. A creator is
      * refused before its crypto instance is looked at, which is shown by
      * handing the constructor an instance that can only verify, because a
-     * message naming the key rather than the maximum would mean the two
-     * checks ran the other way round. A domain that arrives on another OWID
-     * covered by the signature is refused while the data to sign is being
-     * built, which is before the signing key is used, so the signature field
-     * is left holding exactly what it held before.
+     * message naming the key rather than the maximum would mean the two checks
+     * ran the other way round.
      */
     public function testRefusalHappensBeforeAnySignature(): void
     {
         $domain = self::domain(OwidException::MAXIMUM_DOMAIN_LENGTH + 1);
-        $maximum = OwidException::MAXIMUM_DOMAIN_LENGTH;
         $crypto = Crypto::new();
         $verifyOnly = Crypto::newVerifyOnly($crypto->publicKeyPem());
 
-        try {
-            new Creator($domain, $verifyOnly);
-            $this->fail('over long creator domain should have been refused');
-        } catch (OwidException $e) {
-            $this->assertStringContainsString("'$maximum'", $e->getMessage());
-        }
-
-        $other = new Owid();
-        $other->domain = $domain;
-        $other->payload = 'other';
-        $other->signature = str_repeat(chr(0x11), self::SIGNATURE_LENGTH);
-        $owid = new Owid();
-        $owid->payload = 'value';
-        $owid->signature = str_repeat(chr(0x22), self::SIGNATURE_LENGTH);
-
-        try {
-            (new Creator('51d.es', $crypto))->signWithOthers($owid, [$other]);
-            $this->fail('over long domain on another OWID should be refused');
-        } catch (OwidException $e) {
-            $this->assertStringContainsString("'$maximum'", $e->getMessage());
-        }
-        $this->assertSame(
-            str_repeat(chr(0x22), self::SIGNATURE_LENGTH),
-            $owid->signature,
-            'the signature should not have been calculated'
-        );
+        $this->assertTrue($this->refusalNamesMaximum(
+            fn () => new Creator($domain, $verifyOnly)
+        ), 'the domain should be refused before the key is looked at');
     }
 
     /**
      * What the library itself signs still parses and still verifies, with an
-     * ordinary domain and with one of the greatest length, so the bound is
-     * not retrospective on anything real.
+     * ordinary domain and with one of the greatest length, so the bound is not
+     * retrospective on anything real.
      */
     public function testLibraryOutputParses(): void
     {
@@ -334,9 +307,9 @@ final class DomainLengthTest extends TestCase
         foreach ($domains as $domain) {
             $crypto = Crypto::new();
             $creator = new Creator($domain, $crypto);
-            $original = $creator->signString('value');
+            $original = $creator->create('value');
 
-            $parsed = Owid::fromByteArray($original->asByteArray());
+            $parsed = Fixtures::parseBytes($original->asByteArray());
 
             $this->assertSame($domain, $parsed->domain);
             $this->assertTrue(

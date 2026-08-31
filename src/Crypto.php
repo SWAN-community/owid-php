@@ -111,6 +111,32 @@ final class Crypto
     }
 
     /**
+     * Creates an instance for verifying OWIDs from the public key PEM
+     * provided, or returns null when the material cannot be read as a public
+     * key.
+     *
+     * Key material arriving from a well known end point is external data, so
+     * being unreadable is an operational fault rather than an exceptional one.
+     * Answering with null lets the caller report it as InvalidKey, which is
+     * what was needed on 30 August 2026 when the end points served PEM a
+     * strict parser rejects, because reporting that as an invalid signature
+     * would have read as an attack. The reason the material could not be read
+     * is deliberately not returned, as the caller has nothing to do with it
+     * beyond reporting the key as unusable.
+     */
+    public static function tryVerifyOnly(string $publicPem): ?self
+    {
+        try {
+            return self::newVerifyOnly($publicPem);
+        } catch (OwidException $e) {
+            // Catching here costs an exception only when an operator's key is
+            // wrong, which is rare and not chosen by whoever sends
+            // identifiers, unlike a parse failure.
+            return null;
+        }
+    }
+
+    /**
      * Signs the byte array with the private key and returns the 64 byte
      * signature in the raw r concatenated with s form.
      *
@@ -155,6 +181,29 @@ final class Crypto
         if (strlen($signature) !== OwidException::SIGNATURE_LENGTH) {
             throw OwidException::invalidSignatureLength(strlen($signature));
         }
+        return $this->signatureStatus($data, $signature) ===
+            SignatureStatus::SignatureValid;
+    }
+
+    /**
+     * Says whether the signature is genuine for the data, and where the
+     * question could not be answered, says that instead.
+     *
+     * A signature of the wrong length, a key this instance does not hold, or a
+     * provider failure each leave the signature unjudged, and none of them is
+     * reported as SignatureInvalid, which means only that a well formed
+     * signature did not match.
+     */
+    public function signatureStatus(
+        string $data,
+        string $signature
+    ): SignatureStatus {
+        if ($this->verifyingKey === null) {
+            return SignatureStatus::InvalidKey;
+        }
+        if (strlen($signature) !== OwidException::SIGNATURE_LENGTH) {
+            return SignatureStatus::InvalidSignatureLength;
+        }
         $der = self::rawToDer($signature);
         $result = openssl_verify(
             $data,
@@ -163,8 +212,16 @@ final class Crypto
             OPENSSL_ALGO_SHA256
         );
         // openssl_verify returns 1 for a valid signature, 0 for an invalid
-        // signature, and -1 when an error occurs. Only 1 means valid.
-        return $result === 1;
+        // signature, and -1 when an error occurs. The error is the provider
+        // failing on inputs that were both valid, which says nothing about the
+        // identifier and must not be reported as if it did.
+        if ($result === -1) {
+            self::lastOpenSslError();
+            return SignatureStatus::VerificationError;
+        }
+        return $result === 1
+            ? SignatureStatus::SignatureValid
+            : SignatureStatus::SignatureInvalid;
     }
 
     /**

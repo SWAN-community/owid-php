@@ -30,6 +30,9 @@ namespace SwanCommunity\Owid\Tests;
 require __DIR__ . '/../src/OwidException.php';
 require __DIR__ . '/../src/Version.php';
 require __DIR__ . '/../src/Io.php';
+require __DIR__ . '/../src/ParseStatus.php';
+require __DIR__ . '/../src/SignatureStatus.php';
+require __DIR__ . '/../src/ParseResult.php';
 require __DIR__ . '/../src/Crypto.php';
 require __DIR__ . '/../src/Owid.php';
 require __DIR__ . '/../src/Creator.php';
@@ -37,12 +40,15 @@ require __DIR__ . '/../src/Endpoints.php';
 require __DIR__ . '/Fixtures.php';
 
 use DateTimeImmutable;
+use Error;
 use SwanCommunity\Owid\Crypto;
 use SwanCommunity\Owid\Creator;
 use SwanCommunity\Owid\Endpoints;
 use SwanCommunity\Owid\Io;
 use SwanCommunity\Owid\Owid;
 use SwanCommunity\Owid\OwidException;
+use SwanCommunity\Owid\ParseStatus;
+use SwanCommunity\Owid\SignatureStatus;
 use SwanCommunity\Owid\Version;
 
 /**
@@ -67,7 +73,8 @@ final class Runner
 
     /**
      * Records a pass when the callable raises an OwidException, otherwise a
-     * fail.
+     * fail. Used for the write and configuration side, where a fault is a
+     * fault in the program rather than data arriving from outside.
      */
     public function checkThrows(string $name, callable $callable): void
     {
@@ -77,6 +84,24 @@ final class Runner
         } catch (OwidException $e) {
             $this->check($name, true);
         }
+    }
+
+    /**
+     * Records a pass when reading the bytes reports the status given, hands
+     * back no value, and raises nothing.
+     */
+    public function checkRefused(
+        string $name,
+        string $bytes,
+        ParseStatus $expected
+    ): void {
+        $result = Owid::tryFromByteArray($bytes);
+        $this->check(
+            $name,
+            !$result->ok &&
+            $result->owid === null &&
+            $result->status === $expected
+        );
     }
 
     public function summary(): int
@@ -89,14 +114,43 @@ final class Runner
 }
 
 /**
- * Returns a copy of the OWID with its last serialized byte flipped.
+ * Reads a value the runner expects to be a well formed OWID, and stops the run
+ * with the reason when it is not.
  */
-function flipLastByte(Owid $owid, array $others = []): Owid
+function parse(string $value): Owid
+{
+    $result = Owid::tryFromBase64($value);
+    if (!$result->ok) {
+        echo 'FAIL  fixture did not read: ' . $result->status->value . PHP_EOL;
+        exit(1);
+    }
+    return $result->owid;
+}
+
+/**
+ * Reads bytes the runner expects to be one whole OWID, and stops the run with
+ * the reason when they are not.
+ */
+function parseBytes(string $bytes): Owid
+{
+    $result = Owid::tryFromByteArray($bytes);
+    if (!$result->ok) {
+        echo 'FAIL  bytes did not read: ' . $result->status->value . PHP_EOL;
+        exit(1);
+    }
+    return $result->owid;
+}
+
+/**
+ * Returns a copy of the OWID with its last serialized byte flipped, read back
+ * from the bytes because that is how tampering reaches a verifier.
+ */
+function flipLastByte(Owid $owid): Owid
 {
     $bytes = $owid->asByteArray();
     $last = strlen($bytes) - 1;
     $bytes[$last] = chr(ord($bytes[$last]) ^ 0x01);
-    return Owid::fromByteArray($bytes);
+    return parseBytes($bytes);
 }
 
 $runner = new Runner();
@@ -109,50 +163,54 @@ $vectors = [
 ];
 foreach ($vectors as $name => $value) {
     $bytes = base64_decode($value, true);
-    $owid = Owid::fromByteArray($bytes);
+    $owid = parseBytes($bytes);
     $runner->check(
         "canonical $name round trips byte exact",
         $bytes === $owid->asByteArray()
     );
 }
 
-$creator = Owid::fromBase64(Fixtures::CANONICAL_CREATOR);
-$runner->check('creator domain is 51db.uk', $creator->domain === '51db.uk');
-$runner->check('creator version is 2', $creator->version === Version::Version2);
-$runner->check('creator payload length is 341', strlen($creator->payload) === 341);
+$creatorVector = parse(Fixtures::CANONICAL_CREATOR);
+$runner->check('creator domain is 51db.uk', $creatorVector->domain === '51db.uk');
+$runner->check('creator version is 2', $creatorVector->version === Version::Version2);
+$runner->check('creator payload length is 341', strlen($creatorVector->payload) === 341);
 $runner->check(
     'creator date is 2021-04-06T12:59Z',
-    $creator->date->format('Y-m-d\TH:i\Z') === '2021-04-06T12:59Z'
+    $creatorVector->date->format('Y-m-d\TH:i\Z') === '2021-04-06T12:59Z'
 );
-$runner->check('creator first signature byte is 74', ord($creator->signature[0]) === 74);
-$runner->check('creator last signature byte is 64', ord($creator->signature[63]) === 64);
+$runner->check('creator first signature byte is 74', ord($creatorVector->signature[0]) === 74);
+$runner->check('creator last signature byte is 64', ord($creatorVector->signature[63]) === 64);
 
-$supplier = Owid::fromBase64(Fixtures::CANONICAL_SUPPLIER);
+$supplier = parse(Fixtures::CANONICAL_SUPPLIER);
 $runner->check('supplier payload printable is 0103', $supplier->payloadAsPrintable() === '0103');
 $runner->check('supplier payload base64 is AQM=', $supplier->payloadAsBase64() === 'AQM=');
 
 $runner->check(
-    'bad vector parses',
-    Owid::fromBase64(Fixtures::CANONICAL_BAD)->domain === 'badssp.swan-demo.uk'
+    'bad vector reads',
+    parse(Fixtures::CANONICAL_BAD)->domain === 'badssp.swan-demo.uk'
 );
 
 // B. Cross language signed fixtures.
 foreach (Fixtures::crossLanguage() as $lang => $fixture) {
     $spki = $fixture['spki'];
 
-    $simple = Owid::fromBase64($fixture['simple']);
+    $simple = parse($fixture['simple']);
     $runner->check("$lang simple payload is example", $simple->payloadAsString() === 'example');
     $runner->check("$lang simple verifies", $simple->verifyWithPublicKey($spki));
+    $runner->check(
+        "$lang simple reports a valid signature",
+        $simple->signatureStatus($spki) === SignatureStatus::SignatureValid
+    );
 
-    $utf8 = Owid::fromBase64($fixture['utf8']);
+    $utf8 = parse($fixture['utf8']);
     $runner->check(
         "$lang utf8 payload text matches",
         $utf8->payloadAsString() === Fixtures::UTF8_PAYLOAD
     );
     $runner->check("$lang utf8 verifies", $utf8->verifyWithPublicKey($spki));
 
-    $root = Owid::fromBase64($fixture['chain_root']);
-    $party = Owid::fromBase64($fixture['chain_party']);
+    $root = parse($fixture['chain_root']);
+    $party = parse($fixture['chain_party']);
     $runner->check("$lang chain root verifies alone", $root->verifyWithPublicKey($spki));
     $runner->check(
         "$lang chain party verifies with root",
@@ -164,7 +222,7 @@ foreach (Fixtures::crossLanguage() as $lang => $fixture) {
     );
 
     foreach (['simple', 'utf8', 'chain_root'] as $key) {
-        $tampered = flipLastByte(Owid::fromBase64($fixture[$key]));
+        $tampered = flipLastByte(parse($fixture[$key]));
         $runner->check(
             "$lang $key with flipped byte fails",
             !$tampered->verifyWithPublicKey($spki)
@@ -177,40 +235,118 @@ foreach (Fixtures::crossLanguage() as $lang => $fixture) {
     );
 }
 
-// Sign and self verify, plus a tampered copy fails.
+// Create and self verify, plus a tampered copy fails.
 $crypto = Crypto::new();
 $signer = new Creator('example.com', $crypto);
-$signed = $signer->signString('Hello World');
-$runner->check('signed OWID domain set by creator', $signed->domain === 'example.com');
-$runner->check('signed OWID version is 3', $signed->version === Version::Version3);
-$runner->check('signed OWID has 64 byte signature', strlen($signed->signature) === 64);
-$runner->check('signed OWID verifies with crypto', $signed->verifyWithCrypto($crypto));
-$copy = Owid::fromBase64($signed->asBase64());
+$signed = $signer->create('Hello World');
+$runner->check('created OWID domain set by creator', $signed->domain === 'example.com');
+$runner->check('created OWID version is 3', $signed->version === Version::Version3);
+$runner->check('created OWID has 64 byte signature', strlen($signed->signature) === 64);
+$runner->check('created OWID verifies with crypto', $signed->verifyWithCrypto($crypto));
+$copy = parse($signed->asBase64());
 $runner->check(
-    'signed OWID verifies via public key after round trip',
+    'created OWID verifies via public key after round trip',
     $copy->verifyWithPublicKey($crypto->publicKeyPem())
 );
 $tamperedLocal = flipLastByte($signed);
 $runner->check('tampered local OWID fails', !$tamperedLocal->verifyWithCrypto($crypto));
 
+// A caller cannot build an OWID, and cannot change one.
+$constructorIsPrivate = (new \ReflectionClass(Owid::class))->getConstructor()->isPrivate();
+$runner->check('the OWID constructor is private', $constructorIsPrivate);
+$reboundRefused = false;
+try {
+    $signed->payload = 'other';
+} catch (Error $e) {
+    $reboundRefused = str_contains($e->getMessage(), 'readonly');
+}
+$runner->check('an OWID field cannot be rebound', $reboundRefused);
+$payloadCopy = $signed->payload;
+$payloadCopy[0] = 'z';
+$runner->check(
+    'writing into a returned payload does not alter the OWID',
+    $signed->payload === 'Hello World'
+);
+$runner->check(
+    'the creator offers no way to sign an existing OWID',
+    !method_exists(Creator::class, 'sign') &&
+    !method_exists(Creator::class, 'signWithOthers') &&
+    !method_exists(Creator::class, 'signString') &&
+    !method_exists(Creator::class, 'signBytes')
+);
+
 // Local chain.
-$localRoot = $signer->signString('root');
-$localParty = new Owid();
-$localParty->payload = 'party';
-$signer->signWithOthers($localParty, [$localRoot]);
-$runner->check('local chain party verifies with root', $localParty->verifyWithCrypto($crypto, [$localRoot]));
+$localRoot = $signer->create('root');
+$localParty = $signer->create('party', [$localRoot]);
+$runner->check(
+    'local chain party verifies with root',
+    $localParty->verifyWithCrypto($crypto, [$localRoot])
+);
 $runner->check('local chain party fails with no others', !$localParty->verifyWithCrypto($crypto));
 
 // UTF-8 payload round trip.
-$utf8Signed = $signer->signString(Fixtures::UTF8_PAYLOAD);
-$utf8Copy = Owid::fromBase64($utf8Signed->asBase64());
+$utf8Signed = $signer->create(Fixtures::UTF8_PAYLOAD);
+$utf8Copy = parse($utf8Signed->asBase64());
 $runner->check('utf8 payload round trips as text', $utf8Copy->payloadAsString() === Fixtures::UTF8_PAYLOAD);
+
+// Reading answers rather than raising, with the same three facts every time.
+$goodResult = Owid::tryFromByteArray($signed->asByteArray());
+$runner->check(
+    'a successful read reports it worked, a value and Parsed',
+    $goodResult->ok &&
+    $goodResult->owid !== null &&
+    $goodResult->status === ParseStatus::Parsed
+);
+$runner->check(
+    'absent input is missing input',
+    Owid::tryFromBase64(null)->status === ParseStatus::MissingInput &&
+    Owid::tryFromBase64('')->status === ParseStatus::MissingInput &&
+    Owid::tryFromByteArray(null)->status === ParseStatus::MissingInput
+);
+$runner->check(
+    'input that is not text is the wrong sort of input',
+    Owid::tryFromBase64(['a'])->status === ParseStatus::InvalidInputType &&
+    Owid::tryFromBase64(5)->status === ParseStatus::InvalidInputType
+);
+$runner->check(
+    'invalid base 64 is reported',
+    Owid::tryFromBase64('not base 64 at all!!')->status === ParseStatus::InvalidBase64
+);
+$runner->checkRefused(
+    'an unknown version byte is reported',
+    "\x09rest",
+    ParseStatus::UnsupportedVersion
+);
+$runner->checkRefused(
+    'a buffer stopping inside the envelope ends early',
+    substr($signed->asByteArray(), 0, 8),
+    ParseStatus::UnexpectedEnd
+);
+$runner->checkRefused(
+    'a trailing byte is a byte count mismatch',
+    $signed->asByteArray() . "\x00",
+    ParseStatus::ByteCountMismatch
+);
+$badSignatureBytes = $signed->asByteArray();
+$badSignatureBytes[strlen($badSignatureBytes) - 1] = chr(
+    ord($badSignatureBytes[strlen($badSignatureBytes) - 1]) ^ 0xFF
+);
+$badSignatureResult = Owid::tryFromByteArray($badSignatureBytes);
+$runner->check(
+    'a valid structure with a bad signature reads and then fails to verify',
+    $badSignatureResult->ok && !$badSignatureResult->owid->verifyWithCrypto($crypto)
+);
+$runner->check(
+    'a key that cannot be read is not an invalid signature',
+    $signed->signatureStatus('not a pem') === SignatureStatus::InvalidKey
+);
 
 // Empty PEM guards.
 $runner->checkThrows('empty public PEM guard', fn () => Crypto::newVerifyOnly('   '));
 $runner->checkThrows('empty private PEM guard', fn () => Crypto::newSignOnly(''));
 $runner->checkThrows('invalid public PEM rejected', fn () => Crypto::newVerifyOnly('invalid'));
 $runner->checkThrows('invalid private PEM rejected', fn () => Crypto::newSignOnly('invalid'));
+$runner->check('unreadable PEM answers with null', Crypto::tryVerifyOnly('invalid') === null);
 
 // Crypto via PEM.
 $pemSigner = Crypto::newSignOnly($crypto->privateKeyPem());
@@ -219,6 +355,11 @@ $sig = $pemSigner->signByteArray('test');
 $runner->check('sign via imported private key yields 64 bytes', strlen($sig) === 64);
 $runner->check('verify via imported public key', $pemVerifier->verifyByteArray('test', $sig));
 $runner->check('verify rejects other data', !$pemVerifier->verifyByteArray('other', $sig));
+$runner->check(
+    'a signature of the wrong length is not a signature that does not match',
+    $pemVerifier->signatureStatus('test', str_repeat("\x00", 63)) ===
+        SignatureStatus::InvalidSignatureLength
+);
 $runner->checkThrows(
     'verify rejects wrong length signature',
     fn () => $crypto->verifyByteArray('test', str_repeat("\x00", 63))
@@ -240,32 +381,58 @@ $runner->check(
     Crypto::derToRaw(Crypto::rawToDer($rawSmall)) === $rawSmall
 );
 
-// Io helpers.
+/**
+ * A version 3 envelope carrying the domain, date and payload given, followed
+ * by the signature bytes given, built with the write helpers so that what is
+ * written can be read back the way a caller reads it.
+ */
+function envelope(
+    string $domain,
+    DateTimeImmutable $date,
+    string $payload,
+    string $signature
+): string {
+    $buffer = '';
+    Io::writeByte($buffer, Version::Version3->asByte());
+    Io::writeString($buffer, $domain);
+    Io::writeDate($buffer, $date, Version::Version3);
+    Io::writeByteArray($buffer, $payload);
+    return $buffer . $signature;
+}
+
+// Io write helpers, read back through a complete envelope.
 $buffer = '';
 Io::writeUint32($buffer, 0x0A242B01);
 $runner->check('uint32 is little endian', $buffer === "\x01\x2B\x24\x0A");
-$runner->check('uint32 round trips', (new Io($buffer))->readUint32() === 0x0A242B01);
 $buffer = '';
 Io::writeString($buffer, 'example.com');
 $runner->check('string is null terminated', $buffer[strlen($buffer) - 1] === "\x00");
-$runner->check('string round trips', (new Io($buffer))->readString() === 'example.com');
-$buffer = '';
 $now = new DateTimeImmutable('now');
+$fullSignature = str_repeat("\x99", 64);
+$written = parseBytes(envelope('example.com', $now, "\x01\x02", $fullSignature));
+$runner->check('written domain reads back', $written->domain === 'example.com');
+$runner->check('written payload reads back', $written->payload === "\x01\x02");
+$runner->check(
+    'written date reads back to the minute',
+    intdiv($written->date->getTimestamp() - Io::BASE_TIMESTAMP, 60) ===
+    intdiv($now->getTimestamp() - Io::BASE_TIMESTAMP, 60)
+);
+$buffer = '';
 Io::writeDate($buffer, $now, Version::Version2);
 $runner->check('version 2 date uses four bytes', strlen($buffer) === 4);
-$readMinutes = intdiv(
-    (new Io($buffer))->readDate(Version::Version2)->getTimestamp() - Io::BASE_TIMESTAMP,
-    60
-);
-$wantMinutes = intdiv($now->getTimestamp() - Io::BASE_TIMESTAMP, 60);
-$runner->check('version 2 date round trips to the minute', $readMinutes === $wantMinutes);
 $buffer = '';
 $v1date = Io::baseDate()->modify('+12345 hours');
 Io::writeDate($buffer, $v1date, Version::Version1);
 $runner->check('version 1 date uses two bytes', strlen($buffer) === 2);
+$v1buffer = '';
+Io::writeByte($v1buffer, Version::Version1->asByte());
+Io::writeString($v1buffer, 'example.com');
+Io::writeDate($v1buffer, $v1date, Version::Version1);
+Io::writeByteArray($v1buffer, '');
+$v1owid = parseBytes($v1buffer . $fullSignature);
 $runner->check(
-    'version 1 date round trips to the hour',
-    (new Io($buffer))->readDate(Version::Version1)->format('Y-m-d H:i') === $v1date->format('Y-m-d H:i')
+    'version 1 date reads back to the hour',
+    $v1owid->date->format('Y-m-d H:i') === $v1date->format('Y-m-d H:i')
 );
 $runner->checkThrows(
     'date before base date rejected',
@@ -281,12 +448,60 @@ $runner->checkThrows(
         Io::writeString($buffer, "bad\x00value");
     }
 );
+$runner->checkThrows(
+    'signature of the wrong length rejected on write',
+    function () {
+        $buffer = '';
+        Io::writeSignature($buffer, str_repeat("\x99", 63));
+    }
+);
 
 // Empty marker.
 $buffer = '';
 Owid::emptyToBuffer($buffer);
-$runner->check('empty marker is a single zero byte', $buffer === "\x00");
-$runner->check('empty marker reads as empty version', Owid::fromByteArray($buffer)->version === Version::Empty);
+$runner->check('empty marker is a single zero byte', $buffer === " ");
+// The marker for a node that is absent is not an OWID, so no value is handed
+// back on either contract, and it is not an unknown version either, because
+// version 0 is supported and meaningful. Its one byte is counted so that a
+// caller walking a run of frames steps over the absent node.
+$markerWhole = Owid::tryFromByteArray($buffer);
+$runner->check(
+    'the marker for an absent node hands back no OWID as a whole buffer',
+    !$markerWhole->ok &&
+    $markerWhole->owid === null &&
+    $markerWhole->status === ParseStatus::AbsentNode
+);
+$markerFrame = Owid::tryFromFrame($buffer . $signed->asByteArray());
+$runner->check(
+    'the marker for an absent node is reported and counted when framed',
+    !$markerFrame->ok &&
+    $markerFrame->owid === null &&
+    $markerFrame->status === ParseStatus::AbsentNode &&
+    $markerFrame->consumed === 1
+);
+$afterMarker = Owid::tryFromFrame($buffer . $signed->asByteArray(), 1);
+$runner->check(
+    'a frame walk steps over an absent node and reads the next OWID',
+    $afterMarker->ok && $afterMarker->owid->payloadAsString() === 'Hello World'
+);
+// A framed envelope that stops early is data that stopped, not a declaration
+// disagreeing with data that is all present, because the bytes may still be
+// arriving and waiting for more is a different answer from giving up.
+$shortFrame = substr($signed->asByteArray(), 0, strlen($signed->asByteArray()) - 1);
+$runner->check(
+    'a short frame ends early rather than disagreeing',
+    Owid::tryFromFrame($shortFrame)->status === ParseStatus::UnexpectedEnd &&
+    Owid::tryFromByteArray($shortFrame)->status === ParseStatus::ByteCountMismatch
+);
+$runner->check(
+    'a buffer of no bytes is missing input',
+    Owid::tryFromByteArray('')->status === ParseStatus::MissingInput &&
+    Owid::tryFromBase64("
+
+
+
+")->status === ParseStatus::MissingInput
+);
 
 // Creator behaviour.
 $runner->checkThrows('empty domain rejected', fn () => new Creator('   ', Crypto::new()));
@@ -295,9 +510,9 @@ $runner->checkThrows(
     fn () => new Creator('example.com', $pemVerifier)
 );
 $fromConfig = Creator::fromConfiguration('example.com', $crypto->privateKeyPem());
-$configOwid = $fromConfig->signString('value');
+$configOwid = $fromConfig->create('value');
 $runner->check(
-    'creator from configuration signs verifiable OWID',
+    'creator from configuration creates a verifiable OWID',
     $configOwid->verifyWithPublicKey($crypto->publicKeyPem())
 );
 
@@ -305,9 +520,9 @@ $runner->check(
 $endpointCreator = new Creator('example.com', Crypto::new());
 $body = Endpoints::creatorResponse($endpointCreator, 'Example Org', 'https://terms.example');
 $runner->check('creator response has publicKeySPKI field', str_contains($body, 'publicKeySPKI'));
-$parsed = json_decode($body, true);
-$runner->check('creator response domain is example.com', $parsed['domain'] === 'example.com');
-$runner->check('creator response name is Example Org', $parsed['name'] === 'Example Org');
+$parsedBody = json_decode($body, true);
+$runner->check('creator response domain is example.com', $parsedBody['domain'] === 'example.com');
+$runner->check('creator response name is Example Org', $parsedBody['name'] === 'Example Org');
 $runner->check(
     'public key response returns PEM for spki',
     str_contains(Endpoints::publicKeyResponse($endpointCreator, 'spki'), 'BEGIN PUBLIC KEY')
@@ -343,13 +558,13 @@ function payloadEnvelope(int $declared, string $payload, string $signature): str
 $lengthPayload = str_repeat("\x5A", 37);
 $lengthSignature = str_repeat("\x99", 64);
 $runner->check(
-    'matching payload length parses',
-    Owid::fromByteArray(payloadEnvelope(37, $lengthPayload, $lengthSignature))->payload === $lengthPayload
+    'matching payload length reads',
+    parseBytes(payloadEnvelope(37, $lengthPayload, $lengthSignature))->payload === $lengthPayload
 );
 $largeLengthPayload = str_repeat("\x5A", 1024 * 1024);
 $runner->check(
-    'matching one mebibyte payload parses',
-    Owid::fromByteArray(payloadEnvelope(
+    'matching one mebibyte payload reads',
+    parseBytes(payloadEnvelope(
         strlen($largeLengthPayload),
         $largeLengthPayload,
         $lengthSignature
@@ -357,31 +572,34 @@ $runner->check(
 );
 unset($largeLengthPayload);
 $runner->check(
-    'empty payload with signature parses',
-    Owid::fromByteArray(payloadEnvelope(0, '', $lengthSignature))->payload === ''
+    'empty payload with signature reads',
+    parseBytes(payloadEnvelope(0, '', $lengthSignature))->payload === ''
 );
 foreach ([36, 38] as $declared) {
-    $runner->checkThrows(
+    $runner->checkRefused(
         "payload length $declared off by one refused",
-        fn () => Owid::fromByteArray(payloadEnvelope($declared, $lengthPayload, $lengthSignature))
+        payloadEnvelope($declared, $lengthPayload, $lengthSignature),
+        ParseStatus::ByteCountMismatch
     );
 }
-$runner->checkThrows(
+$runner->checkRefused(
     'trailing byte after signature refused',
-    fn () => Owid::fromByteArray(payloadEnvelope(37, $lengthPayload, $lengthSignature) . "\x00")
+    payloadEnvelope(37, $lengthPayload, $lengthSignature) . "\x00",
+    ParseStatus::ByteCountMismatch
 );
-$runner->checkThrows(
+$runner->checkRefused(
     '63 byte signature refused',
-    fn () => Owid::fromByteArray(payloadEnvelope(37, $lengthPayload, str_repeat("\x99", 63)))
+    payloadEnvelope(37, $lengthPayload, str_repeat("\x99", 63)),
+    ParseStatus::ByteCountMismatch
 );
 foreach ([64 * 1024 * 1024, 0x7FFFFFFF, 0xFFFFFFFF] as $declared) {
     $refused = true;
+    $bytes = payloadEnvelope($declared, '', '');
     $start = hrtime(true);
     for ($attempt = 0; $attempt < 1000; $attempt++) {
-        try {
-            Owid::fromByteArray(payloadEnvelope($declared, '', ''));
+        $result = Owid::tryFromByteArray($bytes);
+        if ($result->ok || $result->status !== ParseStatus::ByteCountMismatch) {
             $refused = false;
-        } catch (OwidException $e) {
         }
     }
     $elapsed = (hrtime(true) - $start) / 1e9;
@@ -390,6 +608,18 @@ foreach ([64 * 1024 * 1024, 0x7FFFFFFF, 0xFFFFFFFF] as $declared) {
         $refused && $elapsed < 1.0
     );
 }
+
+// The framed reader leaves what follows for the next read.
+$framed = payloadEnvelope(37, $lengthPayload, $lengthSignature) .
+    payloadEnvelope(0, '', $lengthSignature);
+$firstFrame = Owid::tryFromFrame($framed);
+$secondFrame = Owid::tryFromFrame($framed, $firstFrame->consumed);
+$runner->check(
+    'the framed reader reads one envelope and leaves the next',
+    $firstFrame->ok &&
+    $secondFrame->ok &&
+    $firstFrame->consumed + $secondFrame->consumed === strlen($framed)
+);
 
 // Domain length. The zero terminator is whatever the sender wrote, so the
 // search for it stops at the greatest number of characters a domain name can
@@ -406,9 +636,9 @@ function domainOfLength(int $length): string
     return implode('.', $labels);
 }
 // The domain and its terminator are appended here rather than through
-// Io::writeString because these checks build domains the write side now
-// refuses, and the point of them is what the read side does with such bytes
-// when they arrive from somewhere else.
+// Io::writeString because these checks build domains the write side refuses,
+// and the point of them is what the read side does with such bytes when they
+// arrive from somewhere else.
 function domainEnvelope(string $domain): string
 {
     $buffer = '';
@@ -420,27 +650,25 @@ function domainEnvelope(string $domain): string
 }
 $maximumDomain = domainOfLength(OwidException::MAXIMUM_DOMAIN_LENGTH);
 $maximumBytes = domainEnvelope($maximumDomain);
-$maximumOwid = Owid::fromByteArray($maximumBytes);
+$maximumOwid = parseBytes($maximumBytes);
 $runner->check(
-    'domain of the greatest length parses',
+    'domain of the greatest length reads',
     $maximumOwid->domain === $maximumDomain
 );
 $runner->check(
     'domain of the greatest length round trips byte exact',
     $maximumOwid->asByteArray() === $maximumBytes
 );
-$runner->checkThrows(
+$runner->checkRefused(
     'domain one character over the greatest length refused',
-    fn () => Owid::fromByteArray(
-        domainEnvelope(domainOfLength(OwidException::MAXIMUM_DOMAIN_LENGTH + 1))
-    )
+    domainEnvelope(domainOfLength(OwidException::MAXIMUM_DOMAIN_LENGTH + 1)),
+    ParseStatus::InvalidDomainEncoding
 );
-$runner->checkThrows(
+$runner->checkRefused(
     'domain filling the bound with no terminator refused',
-    fn () => Owid::fromByteArray(
-        chr(Version::Version3->asByte()) .
-        str_repeat('a', OwidException::MAXIMUM_DOMAIN_LENGTH)
-    )
+    chr(Version::Version3->asByte()) .
+    str_repeat('a', OwidException::MAXIMUM_DOMAIN_LENGTH),
+    ParseStatus::UnexpectedEnd
 );
 // The cost of a buffer with no terminator is timed over two buffers sixteen
 // times apart, so the result does not depend on how fast the machine is. A
@@ -452,10 +680,9 @@ function timeDomainRefusals(string $bytes, int $attempts, bool &$refused): float
 {
     $start = hrtime(true);
     for ($attempt = 0; $attempt < $attempts; $attempt++) {
-        try {
-            Owid::fromByteArray($bytes);
+        $result = Owid::tryFromByteArray($bytes);
+        if ($result->ok || $result->status !== ParseStatus::InvalidDomainEncoding) {
             $refused = false;
-        } catch (OwidException $e) {
         }
     }
     return (hrtime(true) - $start) / 1e9;
@@ -476,17 +703,17 @@ $runner->check(
 );
 unset($smallUnterminated, $largeUnterminated);
 $maximumCrypto = Crypto::new();
-$maximumSigned = (new Creator($maximumDomain, $maximumCrypto))->signString('value');
-$maximumParsed = Owid::fromByteArray($maximumSigned->asByteArray());
+$maximumSigned = (new Creator($maximumDomain, $maximumCrypto))->create('value');
+$maximumParsed = parseBytes($maximumSigned->asByteArray());
 $runner->check(
-    'signed OWID with the greatest length domain parses and verifies',
+    'created OWID with the greatest length domain reads and verifies',
     $maximumParsed->domain === $maximumDomain &&
     $maximumParsed->verifyWithCrypto($maximumCrypto)
 );
 
 // The write is bounded as well, at the creator where the domain is supplied
-// and again in the serialization, so this library cannot produce an OWID it
-// would then refuse to read.
+// and again in the write helper, so this library cannot produce bytes it would
+// then refuse to read.
 function domainRefusalNamesMaximum(callable $action): bool
 {
     try {
@@ -515,30 +742,16 @@ $runner->check(
         )
     )
 );
-$overLongOwid = new Owid();
-$overLongOwid->domain = $overLongDomain;
-$overLongOwid->payload = 'value';
-$overLongOwid->signature = str_repeat(chr(0x99), 64);
 $runner->check(
-    'serializing a domain over the greatest length is refused',
-    domainRefusalNamesMaximum(fn () => $overLongOwid->asByteArray())
+    'writing a domain over the greatest length is refused',
+    domainRefusalNamesMaximum(function () use ($overLongDomain) {
+        $buffer = '';
+        Io::writeString($buffer, $overLongDomain);
+    })
 );
-$runner->check(
-    'building signing data for a domain over the greatest length is refused',
-    domainRefusalNamesMaximum(fn () => $overLongOwid->dataForCrypto())
-);
-$atBoundOwid = new Owid();
-$atBoundOwid->domain = $maximumDomain;
-$atBoundOwid->payload = 'value';
-$atBoundOwid->signature = str_repeat(chr(0x99), 64);
-$runner->check(
-    'serializing a domain of the greatest length parses back unchanged',
-    Owid::fromByteArray($atBoundOwid->asByteArray())->domain === $maximumDomain
-);
-// The creator refuses the domain before it looks at the crypto instance, so
-// an instance that can only verify still gives the domain message and not
-// the key one, and nothing is ever signed with a domain that could not be
-// read back.
+// The creator refuses the domain before it looks at the crypto instance, so an
+// instance that can only verify still gives the domain message and not the key
+// one, and nothing is ever signed with a domain that could not be read back.
 $runner->check(
     'creator refuses the domain before looking at the crypto instance',
     domainRefusalNamesMaximum(
@@ -547,27 +760,6 @@ $runner->check(
             Crypto::newVerifyOnly($maximumCrypto->publicKeyPem())
         )
     )
-);
-// A domain arriving on another OWID covered by the signature is refused
-// while the data to sign is being built, which is before the signing key is
-// used, so the signature field is left holding what it held before.
-$otherOwid = new Owid();
-$otherOwid->domain = $overLongDomain;
-$otherOwid->payload = 'other';
-$otherOwid->signature = str_repeat(chr(0x11), 64);
-$targetOwid = new Owid();
-$targetOwid->payload = 'value';
-$targetOwid->signature = str_repeat(chr(0x22), 64);
-$runner->check(
-    'over long domain on another OWID is refused when signing',
-    domainRefusalNamesMaximum(
-        fn () => (new Creator('51d.es', $maximumCrypto))
-            ->signWithOthers($targetOwid, [$otherOwid])
-    )
-);
-$runner->check(
-    'signature is not calculated when the domain is refused',
-    $targetOwid->signature === str_repeat(chr(0x22), 64)
 );
 
 exit($runner->summary());

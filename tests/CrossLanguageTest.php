@@ -52,7 +52,7 @@ final class CrossLanguageTest extends TestCase
      */
     public function testSimpleVerifies(string $name, array $fixture): void
     {
-        $owid = Owid::fromBase64($fixture['simple']);
+        $owid = Fixtures::parseBase64($fixture['simple']);
         $this->assertSame('example', $owid->payloadAsString(), "$name simple payload");
         $this->assertTrue(
             $owid->verifyWithPublicKey($fixture['spki']),
@@ -69,7 +69,7 @@ final class CrossLanguageTest extends TestCase
      */
     public function testUtf8Verifies(string $name, array $fixture): void
     {
-        $owid = Owid::fromBase64($fixture['utf8']);
+        $owid = Fixtures::parseBase64($fixture['utf8']);
         $this->assertSame(
             Fixtures::UTF8_PAYLOAD,
             $owid->payloadAsString(),
@@ -91,8 +91,8 @@ final class CrossLanguageTest extends TestCase
      */
     public function testChainVerifies(string $name, array $fixture): void
     {
-        $root = Owid::fromBase64($fixture['chain_root']);
-        $party = Owid::fromBase64($fixture['chain_party']);
+        $root = Fixtures::parseBase64($fixture['chain_root']);
+        $party = Fixtures::parseBase64($fixture['chain_party']);
         $this->assertSame('root', $root->payloadAsString());
         $this->assertSame('party', $party->payloadAsString());
         $this->assertTrue(
@@ -118,16 +118,16 @@ final class CrossLanguageTest extends TestCase
      */
     public function testTamperedFixturesFail(string $name, array $fixture): void
     {
-        $root = Owid::fromBase64($fixture['chain_root']);
+        $root = Fixtures::parseBase64($fixture['chain_root']);
         foreach (['simple', 'utf8', 'chain_root'] as $key) {
-            $owid = Owid::fromBase64($fixture[$key]);
+            $owid = Fixtures::parseBase64($fixture[$key]);
             $tampered = self::flipLastByte($owid);
             $this->assertFalse(
                 $tampered->verifyWithPublicKey($fixture['spki']),
                 "$name $key with a flipped byte should fail"
             );
         }
-        $party = Owid::fromBase64($fixture['chain_party']);
+        $party = Fixtures::parseBase64($fixture['chain_party']);
         $tamperedParty = self::flipLastByte($party);
         $this->assertFalse(
             $tamperedParty->verifyWithPublicKey($fixture['spki'], [$root]),
@@ -137,13 +137,15 @@ final class CrossLanguageTest extends TestCase
 
     /**
      * Returns a copy of the OWID with its last serialized byte, a signature
-     * byte, flipped.
+     * byte, flipped. The tampering is done to the serialized bytes and read
+     * back, because that is how tampering actually reaches a verifier, and
+     * because a signed OWID cannot be altered in memory.
      */
     private static function flipLastByte(Owid $owid): Owid
     {
         $bytes = $owid->asByteArray();
         $last = strlen($bytes) - 1;
         $bytes[$last] = chr(ord($bytes[$last]) ^ 0x01);
-        return Owid::fromByteArray($bytes);
+        return Fixtures::parseBytes($bytes);
     }
 }
