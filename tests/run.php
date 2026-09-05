@@ -37,7 +37,12 @@ require __DIR__ . '/../src/Crypto.php';
 require __DIR__ . '/../src/Owid.php';
 require __DIR__ . '/../src/Creator.php';
 require __DIR__ . '/../src/Endpoints.php';
+require __DIR__ . '/../src/PublicKeyFetchException.php';
+require __DIR__ . '/../src/DatedPublicKey.php';
+require __DIR__ . '/../src/PublicKeySchedule.php';
+require __DIR__ . '/../src/PublicKeyFetch.php';
 require __DIR__ . '/Fixtures.php';
+require __DIR__ . '/KeyFixtures.php';
 
 use DateTimeImmutable;
 use Error;
@@ -760,6 +765,73 @@ $runner->check(
             Crypto::newVerifyOnly($maximumCrypto->publicKeyPem())
         )
     )
+);
+
+// The dated key fetch and the published schedule, against the genuine
+// identifier the cloud issued on 4 September 2026 and the thirty keys the
+// creator published.
+$published = KeyFixtures::schedule();
+$genuine = KeyFixtures::identifier();
+$chosenKey = $published->keyFor($genuine);
+$runner->check(
+    'the schedule chooses the week of 31 August 2026 for the genuine identifier',
+    $chosenKey !== null
+        && $chosenKey->startsAt == KeyFixtures::weekOfTheIdentifier()
+);
+$runner->check(
+    'the schedule verifies the genuine identifier',
+    $published->signatureStatus($genuine)
+        === \SwanCommunity\Owid\SignatureStatus::SignatureValid
+);
+$runner->check(
+    'the last key of the schedule is not the key that signed the identifier',
+    $published->last() !== $chosenKey
+);
+$runner->check(
+    'the fetch URL names the version, the minute and the well known path',
+    \SwanCommunity\Owid\PublicKeyFetch::publicKeyUrl($genuine, 'https')
+        === 'https://51d.es/owid/api/v3/public-key?date=3510720&format=pkcs'
+);
+\SwanCommunity\Owid\PublicKeyFetch::clearCache();
+$served = [];
+$serving = function (string $url, float $timeout) use ($chosenKey, &$served): array {
+    $served[] = $url;
+    return [200, $chosenKey->publicKeyPem];
+};
+$runner->check(
+    "the fetch verifies through a transport of the caller's own",
+    \SwanCommunity\Owid\PublicKeyFetch::signatureStatus($genuine, 'https', [], $serving)
+        === \SwanCommunity\Owid\SignatureStatus::SignatureValid
+);
+$runner->check(
+    'a key already fetched is not asked for again',
+    \SwanCommunity\Owid\PublicKeyFetch::verify($genuine, 'https', [], $serving)
+        && count($served) === 1
+);
+\SwanCommunity\Owid\PublicKeyFetch::clearCache();
+$runner->check(
+    'a key the creator cannot serve is unavailable rather than invalid',
+    \SwanCommunity\Owid\PublicKeyFetch::signatureStatus(
+        $genuine,
+        'https',
+        [],
+        fn (string $url, float $timeout): array => [404, '']
+    ) === \SwanCommunity\Owid\SignatureStatus::KeyUnavailable
+);
+\SwanCommunity\Owid\PublicKeyFetch::clearCache();
+$answered = \SwanCommunity\Owid\Endpoints::publicKeyResponseAt(
+    $published,
+    'pkcs',
+    (string) KeyFixtures::IDENTIFIER_MINUTES,
+    new \DateTimeImmutable('2026-09-14T00:00:00Z')
+);
+$runner->check(
+    'the end point answers the key in force at the date asked',
+    $answered[0] === 200 && $answered[1] === $chosenKey->publicKeyPem
+);
+$runner->check(
+    'the end point answers 404 before the schedule begins',
+    \SwanCommunity\Owid\Endpoints::publicKeyResponseAt($published, 'pkcs', '0')[0] === 404
 );
 
 exit($runner->summary());

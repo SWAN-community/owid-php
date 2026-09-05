@@ -31,7 +31,10 @@ use Exception;
  * methods on Owid, which report a ParseStatus, because data that is not an
  * OWID is an ordinary outcome and not a fault in the program.
  */
-final class OwidException extends Exception
+// Not final, so that a subclass can carry more than a message, such as the
+// status to report when a key could not be obtained, whilst remaining
+// catchable as an OwidException.
+class OwidException extends Exception
 {
     /**
      * The length in bytes of a valid OWID signature.
