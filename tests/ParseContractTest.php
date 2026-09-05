@@ -390,11 +390,13 @@ final class ParseContractTest extends TestCase
     }
 
     /**
-     * This library never fetches a key, so no read can cause a request. The
-     * source is scanned for the ways PHP reaches the network, which is a
-     * stronger statement than any single test of the parse path.
+     * No read can cause a request. The one class that reaches the network is
+     * PublicKeyFetch, which a caller reaches only by asking for it, and
+     * nothing else in the library refers to it. The source is scanned for
+     * the ways PHP reaches the network, which is a stronger statement than
+     * any single test of the parse path.
      */
-    public function testNothingInTheLibraryReachesTheNetwork(): void
+    public function testNothingButTheFetchReachesTheNetwork(): void
     {
         $calls = [
             'curl_init',
@@ -404,16 +406,37 @@ final class ParseContractTest extends TestCase
             'stream_socket_client',
             'stream_context_create',
         ];
+        $fetch = 'PublicKeyFetch.php';
+        $fetchException = 'PublicKeyFetchException.php';
+        $seen = [];
         foreach (glob(__DIR__ . '/../src/*.php') as $file) {
+            $name = basename($file);
+            $seen[] = $name;
             $source = file_get_contents($file);
+            if ($name === $fetch) {
+                $this->assertStringContainsString(
+                    'file_get_contents(',
+                    $source,
+                    'the fetch reaches the network through the stream wrapper'
+                );
+                continue;
+            }
             foreach ($calls as $call) {
                 $this->assertStringNotContainsString(
                     $call . '(',
                     $source,
-                    basename($file) . " must not call $call"
+                    "$name must not call $call"
+                );
+            }
+            if ($name !== $fetchException) {
+                $this->assertStringNotContainsString(
+                    'PublicKeyFetch',
+                    $source,
+                    "$name must not reach the fetch"
                 );
             }
         }
+        $this->assertContains($fetch, $seen, 'the fetch is part of the library');
     }
 
     /**

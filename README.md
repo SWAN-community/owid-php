@@ -18,9 +18,14 @@ about the concepts before looking into this implementation.
 
 ## Scope of this implementation
 
-This library provides the core of OWID with no network access and no external
-runtime dependencies. It uses the PHP openssl extension for the cryptography
-and the mbstring and json extensions for text and end point helpers.
+This library provides the core of OWID with no external runtime dependencies.
+It uses the PHP openssl extension for the cryptography and the mbstring and
+json extensions for text and end point helpers. The core has no network
+access. The one class that reaches the network is `PublicKeyFetch`, which
+fetches another creator's public key from its well known end point through
+the HTTP stream wrapper PHP ships with, is loaded only by a caller that uses
+it, and takes a transport of the caller's own for a host where remote stream
+access is turned off.
 
 It covers:
 
@@ -28,13 +33,15 @@ It covers:
 - Signing and verifying with ECDSA P-256 and SHA-256.
 - Building and verifying chains of OWIDs.
 - Framework agnostic helpers for the well known end points a creator hosts.
+- Fetching the public key of another creator for the date an OWID carries,
+  and choosing a key out of a published schedule.
 
 Versions 1 and 2 of the wire format are deprecated and supported for reading
 existing data only. New OWIDs use version 3.
 
-Fetching a creator public key over HTTP is out of scope. The
-`verifyWithPublicKey` and `signatureStatus` methods accept a public key PEM
-that the caller has already obtained, so any HTTP client can supply it.
+`verifyWithPublicKey` and `signatureStatus` accept a public key PEM the caller
+has already obtained, so any HTTP client can still supply one, and
+`PublicKeyFetch` obtains it for the caller who wants that done once.
 
 ## Payload size and application limits
 
@@ -150,6 +157,83 @@ if ($status === SignatureStatus::SignatureValid) {
     // be answered, which is an operational fault rather than an attack.
 }
 ```
+
+## Verifying an identifier signed in an earlier week
+
+Creators rotate their signing key, weekly in the case of the 51Degrees cloud,
+so the key that is current when an identifier is checked is not the key that
+signed the identifier unless the check happens in the same week. Verifying
+anything older than a few days means asking for the key that was in force on
+the date the identifier carries.
+
+`PublicKeyFetch` asks the creator for that key. The request is
+`/owid/api/v{n}/public-key?date={minutes}&format=pkcs`, where the version in
+the path is the version byte of the identifier being checked and the minutes
+are counted from 2020-01-01 in the same way the identifier stores its date. A
+creator that ignores the parameter returns its current key, so every
+identifier it signed under an earlier key reads as not matching, which is why
+a creator that rotates its key has to honour the date. Keys already fetched
+are held against the URL they came from, which names the domain, the version
+and the minute, up to 1024 of them before the store is emptied, and
+`PublicKeyFetch::clearCache` empties it on demand. Each request waits at most
+ten seconds.
+
+```php
+use SwanCommunity\Owid\PublicKeyFetch;
+
+// A creator on a domain that cannot exist, so the example shows the shape of
+// the call and the status a key that cannot be obtained produces.
+$remoteCreator = new Creator('creator.invalid', Crypto::new());
+$remote = $remoteCreator->create('from another creator');
+
+$fetched = PublicKeyFetch::signatureStatus($remote, 'https');
+if ($fetched === SignatureStatus::KeyUnavailable) {
+    // The key could not be obtained, so the signature was never examined.
+    // Only SignatureInvalid means the identifier should be distrusted.
+}
+```
+
+A host that turns off remote stream access, or a caller whose environment
+needs its own HTTP client, passes a transport as the last argument, being a
+callable that takes the URL and the timeout in seconds, returns the response
+code and the body as a two element array, and throws an `Exception` where no
+response could be obtained at all.
+
+Where the whole published schedule is already held, `PublicKeySchedule`
+chooses the key without any request. The rule is the one the cloud itself
+applies, being the latest key whose start is at or before the date asked
+about.
+
+```php
+use SwanCommunity\Owid\DatedPublicKey;
+use SwanCommunity\Owid\PublicKeySchedule;
+
+$lastWeekPem = Crypto::new()->publicKeyPem();
+$schedule = PublicKeySchedule::of([
+    DatedPublicKey::of(new \DateTimeImmutable('2026-08-24T00:00:00Z'), $lastWeekPem),
+    DatedPublicKey::of(new \DateTimeImmutable('2026-08-31T00:00:00Z'), $crypto->publicKeyPem()),
+]);
+$chosen = $schedule->keyFor($owid);
+$scheduled = $schedule->signatureStatus($owid);
+```
+
+Both examples are run by `ReadmeTest`, as the rest of the examples in this
+file are. The fetch one runs against a creator domain in the reserved
+`.invalid` name space, so it shows the status a key that cannot be obtained
+produces, whilst the case where the key does arrive and the identifier
+verifies is covered by `PublicKeyFetchTest` against a stand in on the loopback
+address.
+
+The only date a key carries here is the date the key came into force. The
+moment key material was generated is not that date and plays no part in the
+choice, because a creator may generate several weeks of keys in one run, and
+a key whose period has not started has signed nothing.
+
+A creator that rotates its key answers the date parameter of its own public
+key end point with `Endpoints::publicKeyResponseAt`, which returns the status
+code and body for the request: the key in force at the date asked, the key in
+force now for a request without a date or with a date later than now, 404
+where no key is in force, and 400 where the date is not a count of minutes.
 
 ## How an OWID comes into existence
 
@@ -274,6 +358,34 @@ The public classes live in the `SwanCommunity\Owid` namespace.
     A PHP string is a byte array, so the payload may be text or raw bytes.
 - `Endpoints` returns the path and body strings for the well known end points
   without binding to any web framework.
+  - `Endpoints::publicKeyResponseAt` answers the date parameter for a creator
+    that rotates its key, choosing from a `PublicKeySchedule` the way the
+    specification requires, and returns the status code and body.
+- `PublicKeyFetch` obtains the key of another creator from the well known end
+  point on the domain the OWID carries.
+  - `PublicKeyFetch::publicKeyUrl` builds the request, naming the version of
+    the OWID and the minute the OWID was signed.
+  - `PublicKeyFetch::publicKeyPem` returns the key, raising
+    `PublicKeyFetchException`, which carries the status to report, the domain
+    and the response code.
+  - `PublicKeyFetch::signatureStatus` answers with the status, so a key that
+    could not be fetched is `KeyUnavailable`, one that could not be read is
+    `InvalidKey`, and neither is mistaken for a signature that does not match.
+    `PublicKeyFetch::verify` answers true only for `SignatureValid`. Both take
+    an optional transport of the caller's own.
+  - `PublicKeyFetch::clearCache` empties the keys already fetched.
+- `PublicKeySchedule` holds the keys a creator has published and chooses
+  between them.
+  - `PublicKeySchedule::of` takes the keys in any order.
+  - `keyInForce` and `keyFor` return the latest key whose start is at or
+    before the date, or the date of the OWID, and null where the schedule
+    does not reach back that far.
+  - `current` returns the key in force now, and `last` the key with the
+    latest start, which for a schedule published ahead of time is usually a
+    key that has not begun. `signatureStatus` chooses the key and answers
+    with the status, and `verify` answers true only for `SignatureValid`.
+- `DatedPublicKey` is one key and the date the key came into force, both read
+  only, made with `DatedPublicKey::of`.
 - `Version` is the wire format version enum.
 - `OwidException` is raised for a fault in the program, such as a creator
   configured with a domain that is too long, a key that cannot be used, or
@@ -316,6 +428,11 @@ minute truncated value.
 The test suite exercises the canonical wire vectors, the cross language signed
 fixtures with their chain and tamper assertions, the signing path, and unit
 tests for the crypto, creator, io, and end point helpers.
+`tests/PublicKeyFetchTest.php` drives the real fetch against a stand in for a
+creator's public key end point, being PHP's built in web server on the
+loopback address serving the published 51d.es schedule, and
+`tests/PublicKeyScheduleTest.php` checks the choice of key against a genuine
+identifier the 51Degrees cloud issued on 4 September 2026.
 
 Run the suite with PHPUnit after installing the development dependencies.
 

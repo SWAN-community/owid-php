@@ -83,6 +83,14 @@ final class ReadmeTest extends TestCase
             fwrite(STDERR, 'the frame walk stopped at ' . $offset);
             exit(1);
         }
+        if ($fetched !== SignatureStatus::KeyUnavailable) {
+            fwrite(STDERR, 'the fetch example status was ' . $fetched->value);
+            exit(1);
+        }
+        if ($scheduled !== SignatureStatus::SignatureValid) {
+            fwrite(STDERR, 'the schedule example status was ' . $scheduled->value);
+            exit(1);
+        }
         PHP;
 
         $script = "<?php\n" .

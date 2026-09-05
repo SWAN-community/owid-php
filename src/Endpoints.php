@@ -20,6 +20,9 @@ declare(strict_types=1);
 
 namespace SwanCommunity\Owid;
 
+use DateTimeImmutable;
+use DateTimeZone;
+
 /**
  * Helpers for hosting the well known end points required by the OWID
  * specification. These are framework agnostic. They return the path and body
@@ -30,6 +33,10 @@ namespace SwanCommunity\Owid;
  * and public key of the creator, and the public key end point at
  * /owid/api/v{version}/public-key returning the public key as PEM text where
  * the format query parameter must be spki or pkcs.
+ *
+ * A creator that rotates its signing key answers the optional date parameter
+ * of the public key end point with publicKeyResponseAt, which chooses from
+ * the published schedule the way the specification requires.
  */
 final class Endpoints
 {
@@ -91,5 +98,51 @@ final class Endpoints
             return $creator->crypto()->subjectPublicKeyInfo();
         }
         throw OwidException::invalidKeyFormat($format);
+    }
+
+    /**
+     * Returns the status code and text body for the public key end point of
+     * a creator that rotates its key, chosen from the schedule the way the
+     * specification requires.
+     *
+     * The date parameter is the OWID's own date, counted in whole minutes
+     * since 2020-01-01, and the key served is the one in force then, being
+     * the latest key whose start is at or before it. A request without a
+     * date, or with a date later than the moment of the request, is served
+     * the key in force at that moment, so a caller cannot ask for a key whose
+     * period has not begun. The answer is 200 with the PEM, 404 with an empty
+     * body where no key is in force at the date, and 400 with an empty body
+     * where the date is not a count of minutes. The moment of the request is
+     * now, and a test may supply it.
+     *
+     * @return array{0: int, 1: string} the status code and the body
+     *
+     * @throws OwidException when the format is not spki or pkcs.
+     */
+    public static function publicKeyResponseAt(
+        PublicKeySchedule $schedule,
+        string $format,
+        ?string $date,
+        ?DateTimeImmutable $now = null
+    ): array {
+        if ($format !== 'spki' && $format !== 'pkcs') {
+            throw OwidException::invalidKeyFormat($format);
+        }
+        $moment = $now ?? new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $asked = $moment;
+        if ($date !== null && $date !== '') {
+            if (preg_match('/^[0-9]{1,10}$/', $date) !== 1 || (int) $date > 0xFFFFFFFF) {
+                return [400, ''];
+            }
+            $asked = Io::baseDate()->modify('+' . $date . ' minutes');
+            if ($asked === false || $asked > $moment) {
+                $asked = $moment;
+            }
+        }
+        $key = $schedule->keyInForce($asked);
+        if ($key === null) {
+            return [404, ''];
+        }
+        return [200, $key->publicKeyPem];
     }
 }

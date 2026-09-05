@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace SwanCommunity\Owid;
 
 use DateTimeImmutable;
+use DateTimeInterface;
 
 /**
  * Low level write helpers for the OWID binary format, and the base date the
@@ -46,6 +47,26 @@ final class Io
     public static function baseDate(): DateTimeImmutable
     {
         return new DateTimeImmutable('@' . self::BASE_TIMESTAMP);
+    }
+
+    /**
+     * Returns the whole minutes from the base date to the date, or -1 where
+     * the count cannot be held in the four byte field of versions 2 and 3,
+     * being a date before the base or beyond the field. The arithmetic is
+     * the one writeDate uses, so the value a fetch names is the value the
+     * OWID carries.
+     */
+    public static function minutesSinceBase(DateTimeInterface $date): int
+    {
+        $elapsed = $date->getTimestamp() - self::BASE_TIMESTAMP;
+        if ($elapsed < 0) {
+            return -1;
+        }
+        $minutes = intdiv($elapsed, 60);
+        if ($minutes > 0xFFFFFFFF) {
+            return -1;
+        }
+        return $minutes;
     }
 
     /**
