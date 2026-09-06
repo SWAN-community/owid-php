@@ -334,8 +334,14 @@ final class PublicKeyFetch
                 'header' => "Accept: text/plain\r\n",
                 'timeout' => $timeout,
                 'ignore_errors' => true,
-                'follow_location' => 1,
-                'max_redirects' => 5,
+                // Never followed. The wrapper would otherwise reopen
+                // whatever Location names, any host and plain http
+                // included, and a creator whose domain answered 302
+                // would have that other place's key trusted as its
+                // own. With ignore_errors the 3xx comes back as the
+                // response code and is read as the key being
+                // unavailable, which is what it is.
+                'follow_location' => 0,
             ],
         ]);
         $http_response_header = [];
@@ -390,7 +396,9 @@ final class PublicKeyFetch
         if ($domain === '') {
             throw new OwidException('the OWID carries no domain');
         }
-        if (preg_match('/^[A-Za-z0-9.-]+$/', $domain) !== 1) {
+        // \z rather than $, because $ also matches before a final line
+        // feed and would let "51d.es\n" through into the URL.
+        if (preg_match('/^[A-Za-z0-9.-]+\z/', $domain) !== 1) {
             // The domain is not repeated back, because the text arrived from
             // outside and a refusal is often logged.
             throw new OwidException(

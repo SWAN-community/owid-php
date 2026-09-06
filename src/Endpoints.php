@@ -122,7 +122,7 @@ final class Endpoints
     public static function publicKeyResponseAt(
         PublicKeySchedule $schedule,
         string $format,
-        ?string $date,
+        mixed $date,
         ?DateTimeImmutable $now = null
     ): array {
         if ($format !== 'spki' && $format !== 'pkcs') {
@@ -130,8 +130,17 @@ final class Endpoints
         }
         $moment = $now ?? new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $asked = $moment;
+        if (is_int($date)) {
+            // A framework that has already parsed the query hands an int.
+            $date = (string) $date;
+        }
         if ($date !== null && $date !== '') {
-            if (preg_match('/^[0-9]{1,10}$/', $date) !== 1 || (int) $date > 0xFFFFFFFF) {
+            // Anything that is not a string of digits is refused, which
+            // covers an array from ?date[]=1, a bool, and a float, rather
+            // than letting the type system throw a 500 out of a 400.
+            if (!is_string($date)
+                || preg_match('/^[0-9]{1,10}\z/', $date) !== 1
+                || (int) $date > 0xFFFFFFFF) {
                 return [400, ''];
             }
             $asked = Io::baseDate()->modify('+' . $date . ' minutes');
