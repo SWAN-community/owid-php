@@ -60,6 +60,9 @@ final class KeyEndPoint
     /** Text shaped like a PEM that no key can be read out of. */
     public const ANSWER_BROKEN_KEY = 'broken-key';
 
+    /** A redirect to a host that is not the creator, which a client must not follow. */
+    public const ANSWER_REDIRECT = 'redirect';
+
     /** The value the router records for a request that carried no date. */
     public const NO_DATE = '-';
 

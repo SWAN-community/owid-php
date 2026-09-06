@@ -134,6 +134,32 @@ final class PublicKeyScheduleTest extends TestCase
      * September to 30 November, so on 4 September the newest key that had
      * already been generated was one that had not started yet.
      */
+    /**
+     * The two pass check that tells selecting by start from anything else.
+     * Under the published schedule the genuine identifier verifies. Move
+     * every start one week later, keeping every key, and the same
+     * identifier must read as not matching, because the key now chosen for
+     * its date is the one that was in force the week before. A selection
+     * that ignored the starts would answer the same both times.
+     */
+    public function testVerifiedUnderThePublishedStartsAndInvalidWhenShifted(): void
+    {
+        $owid = KeyFixtures::identifier();
+        $published = KeyFixtures::scheduledKeys();
+        $asPublished = PublicKeySchedule::of(array_map(
+            static fn (array $key): DatedPublicKey =>
+                DatedPublicKey::of($key['startsAt'], $key['pem']),
+            $published
+        ));
+        $shifted = PublicKeySchedule::of(array_map(
+            static fn (array $key): DatedPublicKey =>
+                DatedPublicKey::of($key['startsAt']->modify('+7 days'), $key['pem']),
+            $published
+        ));
+        $this->assertSame(SignatureStatus::SignatureValid, $asPublished->signatureStatus($owid));
+        $this->assertSame(SignatureStatus::SignatureInvalid, $shifted->signatureStatus($owid));
+    }
+
     public function testSelectionIgnoresTheMomentTheKeysWereGenerated(): void
     {
         $owid = KeyFixtures::identifier();

@@ -160,6 +160,30 @@ final class PublicKeyResponseAtTest extends TestCase
         }
     }
 
+    /**
+     * A date that arrives as something other than a string of digits is
+     * 400 rather than a type error, because ?date[]=1 reaches an
+     * application as an array and a bool or a float can arrive from a
+     * caller that does not use strict types.
+     */
+    public function testADateOfTheWrongTypeIs400(): void
+    {
+        foreach ([['1'], true, 1.5, new \stdClass()] as $wrong) {
+            $this->assertSame(
+                [400, ''],
+                Endpoints::publicKeyResponseAt($this->schedule, 'pkcs', $wrong, $this->now),
+                'date ' . var_export($wrong, true)
+            );
+        }
+        $this->assertSame(
+            [200, $this->thisWeek->publicKeyPem],
+            Endpoints::publicKeyResponseAt(
+                $this->schedule, 'pkcs', (int) self::minutes($this->now), $this->now
+            ),
+            'an int is accepted as its digits'
+        );
+    }
+
     public function testTheFormatMustBeSpkiOrPkcs(): void
     {
         $this->expectException(OwidException::class);

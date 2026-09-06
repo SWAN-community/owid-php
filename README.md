@@ -181,12 +181,17 @@ ten seconds.
 ```php
 use SwanCommunity\Owid\PublicKeyFetch;
 
-// A creator on a domain that cannot exist, so the example shows the shape of
-// the call and the status a key that cannot be obtained produces.
+// A creator whose key this example never actually asks for. The transport
+// below stands in for the network and refuses, so the example shows the
+// shape of the call and the status a key that cannot be obtained produces
+// without touching a resolver or a proxy.
 $remoteCreator = new Creator('creator.invalid', Crypto::new());
 $remote = $remoteCreator->create('from another creator');
 
-$fetched = PublicKeyFetch::signatureStatus($remote, 'https');
+$unreachable = static function (string $url, float $timeout): array {
+    throw new \RuntimeException('this example makes no request');
+};
+$fetched = PublicKeyFetch::signatureStatus($remote, 'https', [], $unreachable);
 if ($fetched === SignatureStatus::KeyUnavailable) {
     // The key could not be obtained, so the signature was never examined.
     // Only SignatureInvalid means the identifier should be distrusted.

@@ -44,6 +44,12 @@ if ($log !== false && $log !== '') {
     );
 }
 
+if ($answer === KeyEndPoint::ANSWER_REDIRECT) {
+    http_response_code(302);
+    header('Location: http://elsewhere.invalid/key.pem');
+    return;
+}
+
 if ($answer === KeyEndPoint::ANSWER_BROKEN_KEY) {
     // Shaped like a PEM, with a body no key can be read out of. This is the
     // 30 August 2026 fault, where the end points served PEM a strict parser

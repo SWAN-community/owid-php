@@ -258,6 +258,31 @@ final class PublicKeyFetchTest extends TestCase
      * Text shaped like a PEM that holds no key is a fault in the key, and
      * never a signature that does not match.
      */
+    /**
+     * A creator whose domain answers with a redirect does not get the key
+     * at the other end trusted as its own. The answer is that the key is
+     * unavailable, carrying the 302, and the request that would have gone
+     * to the other host is never made. Without this a network attacker
+     * who could bend a creator's DNS, or a misconfigured creator, could
+     * substitute the key and forgeries would verify.
+     */
+    public function testARedirectIsNotFollowed(): void
+    {
+        $owid = KeyFixtures::identifier();
+        $endPoint = $this->endPoint(KeyEndPoint::ANSWER_REDIRECT);
+        try {
+            PublicKeyFetch::publicKeyPemAtUrl($endPoint->urlFor($owid), $owid->domain);
+            $this->fail('a redirect must not yield a key');
+        } catch (PublicKeyFetchException $refused) {
+            $this->assertSame(SignatureStatus::KeyUnavailable, $refused->status());
+            $this->assertSame(302, $refused->statusCode());
+        }
+        $this->assertSame(
+            SignatureStatus::KeyUnavailable,
+            PublicKeyFetch::signatureStatusAtUrl($owid, $endPoint->urlFor($owid))
+        );
+    }
+
     public function testAKeyThatCannotBeReadIsInvalidKey(): void
     {
         $owid = KeyFixtures::identifier();
