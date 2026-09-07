@@ -195,15 +195,10 @@ final class PublicKeyFetch
      * SignatureStatus::InvalidKey. Neither is SignatureStatus::SignatureInvalid,
      * because an outage or a badly served key leaves the signature unjudged,
      * and reporting either as invalid would read as an attack.
-     *
-     * @param array<int, Owid> $others the other OWIDs that were signed
-     *                                 together with this one, in the same
-     *                                 order as when signed
      */
     public static function signatureStatus(
         Owid $owid,
         string $scheme,
-        array $others = [],
         ?callable $transport = null
     ): SignatureStatus {
         try {
@@ -211,7 +206,7 @@ final class PublicKeyFetch
         } catch (OwidException $refused) {
             return SignatureStatus::KeyUnavailable;
         }
-        return self::signatureStatusAtUrl($owid, $url, $others, $transport);
+        return self::signatureStatusAtUrl($owid, $url, $transport);
     }
 
     /**
@@ -219,16 +214,13 @@ final class PublicKeyFetch
      * served for the date the OWID carries. Every other outcome, a signature
      * that does not match included, is false, so ask signatureStatus where the
      * difference changes what the caller does.
-     *
-     * @param array<int, Owid> $others
      */
     public static function verify(
         Owid $owid,
         string $scheme,
-        array $others = [],
         ?callable $transport = null
     ): bool {
-        return self::signatureStatus($owid, $scheme, $others, $transport)
+        return self::signatureStatus($owid, $scheme, $transport)
             === SignatureStatus::SignatureValid;
     }
 
@@ -269,13 +261,10 @@ final class PublicKeyFetch
      * signature does not match.
      *
      * @internal
-     *
-     * @param array<int, Owid> $others
      */
     public static function signatureStatusAtUrl(
         Owid $owid,
         string $url,
-        array $others = [],
         ?callable $transport = null
     ): SignatureStatus {
         try {
@@ -285,7 +274,7 @@ final class PublicKeyFetch
         } catch (OwidException $refused) {
             return SignatureStatus::KeyUnavailable;
         }
-        $status = $owid->signatureStatus($answer['pem'], $others);
+        $status = $owid->signatureStatus($answer['pem']);
         if ($status !== SignatureStatus::SignatureInvalid) {
             return $status;
         }
@@ -293,7 +282,7 @@ final class PublicKeyFetch
         if ($minute < 0) {
             return SignatureStatus::SignatureInvalid;
         }
-        if (self::neighbourVerifies($owid, $minute, $url, $answer, $others, $transport)) {
+        if (self::neighbourVerifies($owid, $minute, $url, $answer, $transport)) {
             return SignatureStatus::SignatureValid;
         }
         return $answer['known'] && !self::covers($answer, $minute)
@@ -319,14 +308,12 @@ final class PublicKeyFetch
      * that has already failed.
      *
      * @param array{pem: string, first: int, last: int, known: bool} $tried
-     * @param array<int, Owid> $others
      */
     private static function neighbourVerifies(
         Owid $owid,
         int $minute,
         string $url,
         array $tried,
-        array $others,
         ?callable $transport
     ): bool {
         if (!$tried['known']) {
@@ -354,7 +341,7 @@ final class PublicKeyFetch
             if ($neighbour['pem'] === $tried['pem']) {
                 continue;
             }
-            if ($owid->signatureStatus($neighbour['pem'], $others) === SignatureStatus::SignatureValid) {
+            if ($owid->signatureStatus($neighbour['pem']) === SignatureStatus::SignatureValid) {
                 return true;
             }
         }

@@ -81,28 +81,6 @@ final class OwidTest extends TestCase
     }
 
     /**
-     * A locally built chain verifies with the same others in the same order
-     * and fails with no others.
-     */
-    public function testSignedChainVerifies(): void
-    {
-        $crypto = Crypto::new();
-        $creator = new Creator('example.com', $crypto);
-        $root = $creator->create('root');
-        $party = $creator->create('party', [$root]);
-
-        $this->assertTrue($root->verifyWithCrypto($crypto), 'root verifies alone');
-        $this->assertTrue(
-            $party->verifyWithCrypto($crypto, [$root]),
-            'party verifies with the root'
-        );
-        $this->assertFalse(
-            $party->verifyWithCrypto($crypto),
-            'party fails with no others'
-        );
-    }
-
-    /**
      * The payload accessors return the payload in each documented form.
      */
     public function testPayloadAccessors(): void

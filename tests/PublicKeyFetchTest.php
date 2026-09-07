@@ -640,7 +640,6 @@ final class PublicKeyFetchTest extends TestCase
         $statusOf = fn (Owid $owid): SignatureStatus => PublicKeyFetch::signatureStatusAtUrl(
             $owid,
             'https://creator.test/owid/api/v3/public-key?date=' . Io::minutesSinceBase($owid->date) . '&format=spki',
-            [],
             $creator
         );
         $late = self::signedAt('creator.test', $rotation->modify('+5 minutes'), $first);
@@ -710,7 +709,7 @@ final class PublicKeyFetchTest extends TestCase
         $late = self::signedAt('creator.test', $rotation->modify('+5 minutes'), $first);
         $this->assertSame(
             SignatureStatus::SignatureValid,
-            PublicKeyFetch::signatureStatusAtUrl($late, self::urlOf($late), [], $creator)
+            PublicKeyFetch::signatureStatusAtUrl($late, self::urlOf($late), $creator)
         );
         $rotationMinute = Io::minutesSinceBase($rotation);
         $this->assertSame(
@@ -747,7 +746,7 @@ final class PublicKeyFetchTest extends TestCase
         $live = self::signedAt('creator.test', $rotation->modify('+2 minutes'), $first);
         $this->assertSame(
             SignatureStatus::SignatureValid,
-            PublicKeyFetch::signatureStatusAtUrl($live, self::urlOf($live), [], $creator),
+            PublicKeyFetch::signatureStatusAtUrl($live, self::urlOf($live), $creator),
             'a live identifier signed with the key before the current one verifies'
         );
         $this->assertSame(2, $requests, 'the current key and then the key before it were asked for');
@@ -777,14 +776,14 @@ final class PublicKeyFetchTest extends TestCase
         $earlier = self::signedAt('creator.test', $rotation->modify('-3 days'), $first);
         $this->assertSame(
             SignatureStatus::KeyUnavailable,
-            PublicKeyFetch::signatureStatusAtUrl($earlier, self::urlOf($earlier), [], $ignoring),
+            PublicKeyFetch::signatureStatusAtUrl($earlier, self::urlOf($earlier), $ignoring),
             'the key answered with was not in force at the identifier\'s date'
         );
-        $this->assertFalse(PublicKeyFetch::verify($earlier, 'https', [], $ignoring));
+        $this->assertFalse(PublicKeyFetch::verify($earlier, 'https', $ignoring));
         $forged = self::signedAt('creator.test', $rotation->modify('+3 days'), $stranger);
         $this->assertSame(
             SignatureStatus::SignatureInvalid,
-            PublicKeyFetch::signatureStatusAtUrl($forged, self::urlOf($forged), [], $ignoring),
+            PublicKeyFetch::signatureStatusAtUrl($forged, self::urlOf($forged), $ignoring),
             'a signature failing under the key in force at its date does not match'
         );
     }
@@ -808,7 +807,7 @@ final class PublicKeyFetchTest extends TestCase
         ])];
         $this->assertSame(
             SignatureStatus::InvalidKey,
-            PublicKeyFetch::signatureStatusAtUrl($owid, $endPoint->urlFor($owid), [], $contradictory)
+            PublicKeyFetch::signatureStatusAtUrl($owid, $endPoint->urlFor($owid), $contradictory)
         );
     }
 
@@ -829,7 +828,7 @@ final class PublicKeyFetchTest extends TestCase
         ])];
         $this->assertSame(
             SignatureStatus::InvalidKey,
-            PublicKeyFetch::signatureStatus($owid, 'https', [], $otherFormat),
+            PublicKeyFetch::signatureStatus($owid, 'https', $otherFormat),
             'the key is the right one, but the answer says it is not in the encoding asked for'
         );
         $stated = static fn (string $url, float $timeout): array => [200, json_encode([
@@ -840,7 +839,7 @@ final class PublicKeyFetchTest extends TestCase
         ])];
         $this->assertSame(
             SignatureStatus::SignatureValid,
-            PublicKeyFetch::signatureStatus($owid, 'https', [], $stated),
+            PublicKeyFetch::signatureStatus($owid, 'https', $stated),
             'the same key stated as spki is read'
         );
     }
@@ -878,7 +877,7 @@ final class PublicKeyFetchTest extends TestCase
         };
         $this->assertSame(
             SignatureStatus::KeyUnavailable,
-            PublicKeyFetch::signatureStatus($owid, 'https', [], $noRequest)
+            PublicKeyFetch::signatureStatus($owid, 'https', $noRequest)
         );
     }
 
@@ -938,9 +937,9 @@ final class PublicKeyFetchTest extends TestCase
         };
         $this->assertSame(
             SignatureStatus::SignatureValid,
-            PublicKeyFetch::signatureStatus($owid, 'https', [], $transport)
+            PublicKeyFetch::signatureStatus($owid, 'https', $transport)
         );
-        $this->assertTrue(PublicKeyFetch::verify($owid, 'https', [], $transport));
+        $this->assertTrue(PublicKeyFetch::verify($owid, 'https', $transport));
         $this->assertSame(
             [[PublicKeyFetch::publicKeyUrl($owid, 'https'), PublicKeyFetch::TIMEOUT_SECONDS]],
             $calls,
@@ -965,10 +964,10 @@ final class PublicKeyFetchTest extends TestCase
             [200, Endpoints::publicKeyAnswer($following->publicKeyPem, null, null, null)];
         $this->assertSame(
             SignatureStatus::SignatureInvalid,
-            PublicKeyFetch::signatureStatus($owid, 'https', [], $wrongWeek),
+            PublicKeyFetch::signatureStatus($owid, 'https', $wrongWeek),
             "the following week's key did not sign the identifier"
         );
-        $this->assertFalse(PublicKeyFetch::verify($owid, 'https', [], $wrongWeek));
+        $this->assertFalse(PublicKeyFetch::verify($owid, 'https', $wrongWeek));
     }
 
     public function testATransportThatThrowsIsKeyUnavailable(): void
@@ -979,7 +978,7 @@ final class PublicKeyFetchTest extends TestCase
         };
         $this->assertSame(
             SignatureStatus::KeyUnavailable,
-            PublicKeyFetch::signatureStatus($owid, 'https', [], $unreachable)
+            PublicKeyFetch::signatureStatus($owid, 'https', $unreachable)
         );
     }
 
@@ -990,7 +989,7 @@ final class PublicKeyFetchTest extends TestCase
         $badly = static fn (string $url, float $timeout): array => ['200', 'not a pair'];
         $this->assertSame(
             SignatureStatus::KeyUnavailable,
-            PublicKeyFetch::signatureStatus($owid, 'https', [], $badly)
+            PublicKeyFetch::signatureStatus($owid, 'https', $badly)
         );
     }
 
@@ -1010,7 +1009,7 @@ final class PublicKeyFetchTest extends TestCase
         PublicKeyFetch::clearCache();
         $this->assertSame(
             SignatureStatus::KeyUnavailable,
-            PublicKeyFetch::signatureStatus($owid, 'https', [], $oversized)
+            PublicKeyFetch::signatureStatus($owid, 'https', $oversized)
         );
     }
 }

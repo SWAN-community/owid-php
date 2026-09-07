@@ -195,12 +195,8 @@ final class PublicKeySchedule implements Countable
      * was in force when the OWID was signed. The answer is
      * SignatureStatus::KeyUnavailable where the schedule holds no key for the
      * date, because the signature was never examined.
-     *
-     * @param array<int, Owid> $others the other OWIDs that were signed
-     *                                 together with this one, in the same
-     *                                 order as when signed
      */
-    public function signatureStatus(?Owid $owid, array $others = []): SignatureStatus
+    public function signatureStatus(?Owid $owid): SignatureStatus
     {
         if ($owid === null) {
             return SignatureStatus::KeyUnavailable;
@@ -209,17 +205,15 @@ final class PublicKeySchedule implements Countable
         if ($key === null) {
             return SignatureStatus::KeyUnavailable;
         }
-        return $owid->signatureStatus($key->publicKeyPem, $others);
+        return $owid->signatureStatus($key->publicKeyPem);
     }
 
     /**
      * Returns true only when the signature verifies under the key in force
      * when the OWID was signed.
-     *
-     * @param array<int, Owid> $others
      */
-    public function verify(?Owid $owid, array $others = []): bool
+    public function verify(?Owid $owid): bool
     {
-        return $this->signatureStatus($owid, $others) === SignatureStatus::SignatureValid;
+        return $this->signatureStatus($owid) === SignatureStatus::SignatureValid;
     }
 }

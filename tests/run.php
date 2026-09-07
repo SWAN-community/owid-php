@@ -214,30 +214,13 @@ foreach (Fixtures::crossLanguage() as $lang => $fixture) {
     );
     $runner->check("$lang utf8 verifies", $utf8->verifyWithPublicKey($spki));
 
-    $root = parse($fixture['chain_root']);
-    $party = parse($fixture['chain_party']);
-    $runner->check("$lang chain root verifies alone", $root->verifyWithPublicKey($spki));
-    $runner->check(
-        "$lang chain party verifies with root",
-        $party->verifyWithPublicKey($spki, [$root])
-    );
-    $runner->check(
-        "$lang chain party fails with no others",
-        !$party->verifyWithPublicKey($spki)
-    );
-
-    foreach (['simple', 'utf8', 'chain_root'] as $key) {
+    foreach (['simple', 'utf8'] as $key) {
         $tampered = flipLastByte(parse($fixture[$key]));
         $runner->check(
             "$lang $key with flipped byte fails",
             !$tampered->verifyWithPublicKey($spki)
         );
     }
-    $tamperedParty = flipLastByte($party);
-    $runner->check(
-        "$lang chain party with flipped byte fails",
-        !$tamperedParty->verifyWithPublicKey($spki, [$root])
-    );
 }
 
 // Create and self verify, plus a tampered copy fails.
@@ -279,15 +262,6 @@ $runner->check(
     !method_exists(Creator::class, 'signString') &&
     !method_exists(Creator::class, 'signBytes')
 );
-
-// Local chain.
-$localRoot = $signer->create('root');
-$localParty = $signer->create('party', [$localRoot]);
-$runner->check(
-    'local chain party verifies with root',
-    $localParty->verifyWithCrypto($crypto, [$localRoot])
-);
-$runner->check('local chain party fails with no others', !$localParty->verifyWithCrypto($crypto));
 
 // UTF-8 payload round trip.
 $utf8Signed = $signer->create(Fixtures::UTF8_PAYLOAD);
@@ -796,12 +770,12 @@ $serving = function (string $url, float $timeout) use ($chosenKey, &$served): ar
 };
 $runner->check(
     "the fetch verifies through a transport of the caller's own",
-    \SwanCommunity\Owid\PublicKeyFetch::signatureStatus($genuine, 'https', [], $serving)
+    \SwanCommunity\Owid\PublicKeyFetch::signatureStatus($genuine, 'https', $serving)
         === \SwanCommunity\Owid\SignatureStatus::SignatureValid
 );
 $runner->check(
     'a key already fetched is not asked for again',
-    \SwanCommunity\Owid\PublicKeyFetch::verify($genuine, 'https', [], $serving)
+    \SwanCommunity\Owid\PublicKeyFetch::verify($genuine, 'https', $serving)
         && count($served) === 1
 );
 \SwanCommunity\Owid\PublicKeyFetch::clearCache();
@@ -810,7 +784,6 @@ $runner->check(
     \SwanCommunity\Owid\PublicKeyFetch::signatureStatus(
         $genuine,
         'https',
-        [],
         fn (string $url, float $timeout): array => [404, '']
     ) === \SwanCommunity\Owid\SignatureStatus::KeyUnavailable
 );

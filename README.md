@@ -8,8 +8,7 @@ PHP. This library creates, signs, serializes, and verifies OWIDs.
 ## Overview
 
 An OWID records that the entity operating a domain captured or generated a
-payload at a date and time, with an ECDSA signature over the OWID and any
-other OWIDs it was signed together with. OWIDs chain to form verifiable trees.
+payload at a date and time, with an ECDSA signature over the OWID's own bytes.
 The cryptography is ECDSA on the NIST P-256 curve (also known as secp256r1 or
 prime256v1) with the SHA-256 hash.
 
@@ -31,7 +30,6 @@ It covers:
 
 - Reading and writing the OWID binary wire format, byte exact across versions.
 - Signing and verifying with ECDSA P-256 and SHA-256.
-- Building and verifying chains of OWIDs.
 - Framework agnostic helpers for the well known end points a creator hosts.
 - Fetching the public key of another creator for the date an OWID carries,
   and choosing a key out of a published schedule.
@@ -128,17 +126,6 @@ if ($result->ok) {
 }
 ```
 
-Chain OWIDs by creating one that covers others. The same others, in the same
-order, must be supplied when verifying.
-
-```php
-$root = $creator->create('root');
-$party = $creator->create('party', [$root]);
-
-// Verifying the party requires the root as the single other.
-$party->verifyWithPublicKey($crypto->publicKeyPem(), [$root]);
-```
-
 Where the difference between a signature that does not match and a check that
 could not be made changes what your code should do, ask for the status instead
 of a true or false answer. A key that cannot be read is reported as a fault in
@@ -217,7 +204,7 @@ $remote = $remoteCreator->create('from another creator');
 $unreachable = static function (string $url, float $timeout): array {
     throw new \RuntimeException('this example makes no request');
 };
-$fetched = PublicKeyFetch::signatureStatus($remote, 'https', [], $unreachable);
+$fetched = PublicKeyFetch::signatureStatus($remote, 'https', $unreachable);
 if ($fetched === SignatureStatus::KeyUnavailable) {
     // The key could not be obtained, so the signature was never examined.
     // Only SignatureInvalid means the identifier should be distrusted.
@@ -371,8 +358,8 @@ The public classes live in the `SwanCommunity\Owid` namespace.
   - `payloadAsString` returns the raw payload bytes, `payloadAsPrintable`
     returns lower case zero padded hexadecimal, `payloadAsBase64` returns the
     padded base 64 form.
-  - `verifyWithCrypto`, `verifyWithPublicKey` answer true or false for the OWID
-    and any others it was signed with.
+  - `verifyWithCrypto`, `verifyWithPublicKey` answer true or false for the
+    OWID.
   - `signatureStatus`, `signatureStatusWithCrypto` answer with a
     `SignatureStatus`, which keeps a signature that does not match apart from a
     check that could not be made.
@@ -391,7 +378,7 @@ The public classes live in the `SwanCommunity\Owid` namespace.
     raw bytes.
   - `publicKeyPem`, `privateKeyPem` export the keys as PEM.
 - `Creator` binds a domain to a signing `Crypto`.
-  - `create($payload, $others = [])` creates and signs a new OWID in one call.
+  - `create($payload)` creates and signs a new OWID in one call.
     A PHP string is a byte array, so the payload may be text or raw bytes.
 - `Endpoints` returns the path and body strings for the well known end points
   without binding to any web framework.
@@ -451,10 +438,8 @@ followed by the 32 byte big endian s value. The openssl extension produces and
 consumes ASN.1 DER signatures, so this library converts between the DER form
 and the raw form when signing and verifying.
 
-The data covered by the signature is this OWID without its signature, followed
-by the complete bytes, including the signature, of each other OWID in the
-order given. To verify, the same others must be supplied in the same order as
-when signing.
+The data covered by the signature is this OWID without its signature and
+nothing else.
 
 Although the in memory date may carry more precision, the serialized form is
 minutes since the base date, so signing and verification both operate on the
@@ -463,7 +448,7 @@ minute truncated value.
 ## Testing
 
 The test suite exercises the canonical wire vectors, the cross language signed
-fixtures with their chain and tamper assertions, the signing path, and unit
+fixtures with their tamper assertions, the signing path, and unit
 tests for the crypto, creator, io, and end point helpers.
 `tests/PublicKeyFetchTest.php` drives the real fetch against a stand in for a
 creator's public key end point, being PHP's built in web server on the
