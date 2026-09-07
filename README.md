@@ -174,17 +174,21 @@ creator that ignores the parameter returns its current key, so every
 identifier it signed under an earlier key reads as not matching, which is why
 a creator that rotates its key has to honour the date.
 
-Keys already fetched are held by creator, each against the span of minutes
-the creator has confirmed it for. A key is in force from the start of its
-period until the next key starts, so a key the creator answers with at two
-minutes was in force at every minute between them, and an identifier dated
-inside a confirmed span is verified without a request whichever minute it
-carries. One dated outside every span is asked about, which widens the span
-when the same key comes back. At most 1024 keys are held across every
-creator before the store is emptied and filled again, and
-`PublicKeyFetch::clearCache` empties it on demand, which is how a long
-running process drops a key it has learned it should no longer trust. Each
-request waits at most ten seconds.
+Keys already fetched are held by creator, each against the span of minutes the
+creator has confirmed it for. A key is in force from the start of its period
+until the next key starts, so a key the creator answers with at two minutes was
+in force at every minute between them, and an identifier dated inside a
+confirmed span is verified without a request whichever minute it carries. One
+dated outside every span is asked about, which widens the span when the same
+key comes back. One dated within fifteen minutes of now, or later, is asked
+about every time and never held, because a creator whose clock differs from
+this one's may have read that minute as its present rather than as the minute
+named. Live identifiers therefore cost one request per minute per creator, as
+they always did, and older ones cost none. At most 1024 keys are held across
+every creator before the store is emptied and filled again, and
+`PublicKeyFetch::clearCache` empties it on demand, which is how a long running
+process drops a key it has learned it should no longer trust. Each request
+waits at most ten seconds.
 
 ```php
 use SwanCommunity\Owid\PublicKeyFetch;

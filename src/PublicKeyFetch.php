@@ -62,6 +62,24 @@ final class PublicKeyFetch
     public const MAXIMUM_CACHED_KEYS = 1024;
 
     /**
+     * How far a creator's clock may run ahead of or behind this one's, in
+     * minutes. A minute closer to now than this, or later, is asked about
+     * rather than served from the cache, and is not held.
+     *
+     * A creator reads a date later than its own now as now, and answers with
+     * the key in force now. Within this window this process cannot tell
+     * whether the creator read the minute as its past or as its present, so
+     * the answer says nothing certain about the minute. An identifier signed
+     * just after a rotation by a creator whose clock runs ahead would
+     * otherwise be served the old key from a span confirmed up to now, and
+     * would read as not matching until this clock caught up. Identifiers
+     * dated within the window are asked about once per minute per creator,
+     * as they always were, and every older identifier is served from the
+     * spans.
+     */
+    public const CLOCK_DRIFT_ALLOWANCE_MINUTES = 15;
+
+    /**
      * The most bytes accepted from a response. A public key PEM is a few
      * hundred bytes, so a body beyond this is not a key and is not held.
      */
@@ -267,12 +285,14 @@ final class PublicKeyFetch
     ): string {
         $endPoint = self::endPointOf($url);
         $minute = self::minuteOf($url);
-        $held = self::heldPem($endPoint, $minute);
+        $held = $minute === null ? null : self::heldPem($endPoint, $minute);
         if ($held !== null) {
             return $held;
         }
         $pem = self::read($url, $domain, $transport);
-        self::hold($endPoint, $minute, $pem);
+        if ($minute !== null) {
+            self::hold($endPoint, $minute, $pem);
+        }
         return $pem;
     }
 
@@ -287,20 +307,16 @@ final class PublicKeyFetch
     }
 
     /**
-     * The minute the cache reads the URL as asking about.
+     * The minute the cache reads the URL as asking about, or null where the
+     * cache must not be used for the request.
      *
-     * The date parameter where the URL carries one, and otherwise now,
-     * because a creator answers a request without a date with the key in
-     * force now. A date later than now is read as now as well, because that
-     * is how a creator reads it. A schedule is published ahead of time and a
-     * key that has not started has signed nothing, so the creator answers a
-     * future date with the key in force now, and that answer must be held
-     * against now rather than against a minute the creator has not spoken
-     * for. Held against the future minute, the key would still be served for
-     * that minute after the creator had rotated, and a genuine identifier
-     * signed then would read as not matching.
+     * The date parameter where the URL carries one and it is at least
+     * CLOCK_DRIFT_ALLOWANCE_MINUTES behind now. A request without a date asks
+     * for the key in force now, and one dated within the allowance, or later,
+     * may be read by the creator as its present rather than as the minute
+     * named, so neither is served from the cache nor held in it.
      */
-    private static function minuteOf(string $url): int
+    private static function minuteOf(string $url): ?int
     {
         $now = Io::minutesSinceBase(
             new DateTimeImmutable('now', new DateTimeZone('UTC'))
@@ -309,9 +325,12 @@ final class PublicKeyFetch
         parse_str((string) parse_url($url, PHP_URL_QUERY), $parameters);
         $date = $parameters['date'] ?? null;
         if (is_string($date) && $date !== '' && ctype_digit($date)) {
-            return min((int) $date, $now);
+            $minute = (int) $date;
+            if ($minute <= $now - self::CLOCK_DRIFT_ALLOWANCE_MINUTES) {
+                return $minute;
+            }
         }
-        return $now;
+        return null;
     }
 
     /**

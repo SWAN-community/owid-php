@@ -498,31 +498,39 @@ final class PublicKeyFetchTest extends TestCase
     }
 
     /**
-     * A date later than now is held against now, because a creator answers a
-     * future date with the key in force now and a key held against a minute
-     * the creator has not spoken for would be served for that minute after
-     * the creator had rotated. Two future dates therefore share one request,
-     * and so does a request with no date.
+     * A minute within the clock drift allowance of now, or later, is asked
+     * about every time and never held, because a creator whose clock differs
+     * from this one's may have read it as its present rather than as the
+     * minute named. A minute beyond the allowance is held as usual. Live
+     * identifiers therefore cost one request per minute per creator, as they
+     * always did, and older ones cost none.
      */
-    public function testAFutureDateIsHeldAgainstNow(): void
+    public function testAMinuteWithinTheDriftAllowanceIsNotHeld(): void
     {
         $endPoint = $this->endPoint();
         $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $started = Io::minutesSinceBase($now);
+        $recent = $now->modify('-1 minute');
+        self::pemAt($endPoint, $recent);
+        self::pemAt($endPoint, $recent);
         self::pemAt($endPoint, $now->modify('+7 days'));
-        self::pemAt($endPoint, $now->modify('+14 days'));
         PublicKeyFetch::publicKeyPemAtUrl(
             $endPoint->base . '/owid/api/v3/public-key?format=pkcs',
             KeyFixtures::IDENTIFIER_DOMAIN
         );
+        $old = $now->modify('-' . (PublicKeyFetch::CLOCK_DRIFT_ALLOWANCE_MINUTES + 1) . ' minutes');
+        self::pemAt($endPoint, $old);
+        self::pemAt($endPoint, $old);
         if (Io::minutesSinceBase(new DateTimeImmutable('now', new DateTimeZone('UTC'))) !== $started) {
             $this->markTestSkipped('the minute changed during the test, so the calls were not all about the same now');
         }
         $this->assertCount(
-            1,
+            5,
             $endPoint->dates(),
-            'two future dates and no date are all now, and now was asked about once'
+            'the recent minute was asked about twice, the future minute and the request with no date once each, '
+                . 'and the old minute once with the second call held'
         );
+        $this->assertSame(1, PublicKeyFetch::cachedKeyCount(), 'only the old minute\'s key is held');
     }
 
     /**
