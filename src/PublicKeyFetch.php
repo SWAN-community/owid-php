@@ -29,7 +29,7 @@ use Exception;
  * on the domain the OWID carries, asking for the key that was in force on the
  * date the OWID carries.
  *
- * The end point is /owid/api/v{n}/public-key?date={minutes}&format=pkcs,
+ * The end point is /owid/api/v{n}/public-key?date={minutes}&format=spki,
  * where the version in the path is the version byte of the OWID being checked
  * rather than a constant, and the minutes are counted from 2020-01-01 in the
  * same way the OWID stores the date. Creators rotate weekly, so without the
@@ -153,8 +153,8 @@ final class PublicKeyFetch
         self::checkDomain($owid->domain);
         $minutes = Io::minutesSinceBase($owid->date);
         $query = $minutes >= 0
-            ? 'date=' . $minutes . '&format=pkcs'
-            : 'format=pkcs';
+            ? 'date=' . $minutes . '&format=spki'
+            : 'format=spki';
         return $scheme . '://' . $owid->domain
             . Endpoints::publicKeyPath($owid->version) . '?' . $query;
     }
@@ -342,7 +342,7 @@ final class PublicKeyFetch
         foreach ($beyond as $at) {
             try {
                 $neighbour = self::keyAtUrl(
-                    self::endPointOf($url) . '?date=' . $at . '&format=pkcs',
+                    self::endPointOf($url) . '?date=' . $at . '&format=spki',
                     $owid->domain,
                     $transport
                 );

@@ -38,25 +38,33 @@ final class EndpointsTest extends TestCase
     }
 
     /**
-     * The public key end point returns the PEM for the valid formats and
-     * rejects unknown formats.
+     * The public key end point answers the key as publicKey in the spki
+     * format, which is echoed and which a request naming no format receives,
+     * and refuses every other format, pkcs among them.
      */
     public function testPublicKeyResponseFormats(): void
     {
         $creator = $this->newCreator();
-        foreach (['spki', 'pkcs'] as $format) {
+        foreach (['spki', null, ''] as $format) {
             $body = Endpoints::publicKeyResponse($creator, $format);
             $answer = json_decode($body, true);
+            $this->assertSame('spki', $answer['format'], 'the format is echoed, and taken as spki where absent');
             $this->assertStringContainsString(
                 'BEGIN PUBLIC KEY',
-                $answer['publicKeySPKI'],
-                "should return the PEM for format $format"
+                $answer['publicKey'],
+                'should return the PEM as publicKey'
             );
             $this->assertNull($answer['validFrom'], 'a single key has no schedule');
             $this->assertNull($answer['validTo']);
         }
-        $this->expectException(OwidException::class);
-        Endpoints::publicKeyResponse($creator, 'other');
+        foreach (['pkcs', 'other', 'SPKI'] as $format) {
+            try {
+                Endpoints::publicKeyResponse($creator, $format);
+                $this->fail("format $format should be refused");
+            } catch (OwidException $refused) {
+                $this->assertStringContainsString('spki', $refused->getMessage());
+            }
+        }
     }
 
     /**

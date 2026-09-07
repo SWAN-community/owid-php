@@ -73,13 +73,15 @@ final class PublicKeyResponseAtTest extends TestCase
 
     /**
      * The JSON body the end point answers with for the key, stating the
-     * moments it is valid from and to from the schedule.
+     * format, the key and the moments it is valid from and to from the
+     * schedule.
      */
     private function answer(DatedPublicKey $key): string
     {
         $next = $this->schedule->nextStartAfter($key);
         return json_encode([
-            'publicKeySPKI' => $key->publicKeyPem,
+            'format' => 'spki',
+            'publicKey' => $key->publicKeyPem,
             'validFrom' => $key->startsAt->format('Y-m-d\TH:i:s\Z'),
             'validTo' => $next === null ? null : $next->format('Y-m-d\TH:i:s\Z'),
         ]);
@@ -94,16 +96,16 @@ final class PublicKeyResponseAtTest extends TestCase
     {
         [$status, $body] = Endpoints::publicKeyResponseAt(
             $this->schedule,
-            'pkcs',
+            'spki',
             self::minutes($this->now),
             $this->now
         );
         $this->assertSame(200, $status);
         $answer = json_decode($body, true);
-        $this->assertSame($this->thisWeek->publicKeyPem, $answer['publicKeySPKI']);
+        $this->assertSame($this->thisWeek->publicKeyPem, $answer['publicKey']);
         $this->assertSame('2026-08-31T00:00:00Z', $answer['validFrom']);
         $this->assertSame('2026-09-07T00:00:00Z', $answer['validTo']);
-        [, $body] = Endpoints::publicKeyResponseAt($this->schedule, 'pkcs', null, self::utc('2026-09-10T00:00:00Z'));
+        [, $body] = Endpoints::publicKeyResponseAt($this->schedule, 'spki', null, self::utc('2026-09-10T00:00:00Z'));
         $this->assertNull(json_decode($body, true)['validTo'], 'the last key has no end');
         foreach ([
             fn () => Endpoints::publicKeyAnswer('not a key', null, null, null),
@@ -120,7 +122,7 @@ final class PublicKeyResponseAtTest extends TestCase
                 $this->lastWeek->startsAt
             ),
             fn () => Endpoints::validatePublicKeyAnswer(
-                ['publicKeySPKI' => $this->thisWeek->publicKeyPem, 'validFrom' => null, 'validTo' => '2026-09-07T00:00:00Z'],
+                ['publicKey' => $this->thisWeek->publicKeyPem, 'validFrom' => null, 'validTo' => '2026-09-07T00:00:00Z'],
                 null
             ),
         ] as $refused) {
@@ -133,13 +135,42 @@ final class PublicKeyResponseAtTest extends TestCase
         }
     }
 
+    /**
+     * The format the request asks for is echoed in the answer, a request
+     * naming no format is answered in spki, and any other format, pkcs
+     * among them, is answered 400 rather than in an encoding the caller did
+     * not ask for.
+     */
+    public function testTheFormatIsEchoedAndAnyOtherIsRefused(): void
+    {
+        foreach (['spki', null, ''] as $format) {
+            [$status, $body] = Endpoints::publicKeyResponseAt(
+                $this->schedule,
+                $format,
+                self::minutes($this->now),
+                $this->now
+            );
+            $this->assertSame(200, $status);
+            $answer = json_decode($body, true);
+            $this->assertSame('spki', $answer['format'], 'the format is echoed, and taken as spki where absent');
+            $this->assertSame($this->thisWeek->publicKeyPem, $answer['publicKey']);
+        }
+        foreach (['pkcs', 'other', 'SPKI', ['spki'], 1] as $refused) {
+            $this->assertSame(
+                [400, ''],
+                Endpoints::publicKeyResponseAt($this->schedule, $refused, self::minutes($this->now), $this->now),
+                'a format other than spki is refused'
+            );
+        }
+    }
+
     public function testADatedRequestIsServedTheKeyInForceThen(): void
     {
         $this->assertSame(
             [200, $this->answer($this->lastWeek)],
             Endpoints::publicKeyResponseAt(
                 $this->schedule,
-                'pkcs',
+                'spki',
                 self::minutes(self::utc('2026-08-26T00:00:00Z')),
                 $this->now
             )
@@ -159,7 +190,7 @@ final class PublicKeyResponseAtTest extends TestCase
         foreach ([null, ''] as $absent) {
             $this->assertSame(
                 [200, $this->answer($this->thisWeek)],
-                Endpoints::publicKeyResponseAt($this->schedule, 'pkcs', $absent, $this->now)
+                Endpoints::publicKeyResponseAt($this->schedule, 'spki', $absent, $this->now)
             );
         }
     }
@@ -174,7 +205,7 @@ final class PublicKeyResponseAtTest extends TestCase
             [200, $this->answer($this->thisWeek)],
             Endpoints::publicKeyResponseAt(
                 $this->schedule,
-                'pkcs',
+                'spki',
                 self::minutes(self::utc('2026-09-08T00:00:00Z')),
                 $this->now
             )
@@ -190,7 +221,7 @@ final class PublicKeyResponseAtTest extends TestCase
     {
         $this->assertSame(
             [200, $this->answer($this->thisWeek)],
-            Endpoints::publicKeyResponseAt($this->schedule, 'pkcs', (string) 0xFFFFFFFF, $this->now)
+            Endpoints::publicKeyResponseAt($this->schedule, 'spki', (string) 0xFFFFFFFF, $this->now)
         );
     }
 
@@ -200,14 +231,14 @@ final class PublicKeyResponseAtTest extends TestCase
             [404, ''],
             Endpoints::publicKeyResponseAt(
                 $this->schedule,
-                'pkcs',
+                'spki',
                 self::minutes(self::utc('2026-08-23T00:00:00Z')),
                 $this->now
             )
         );
         $this->assertSame(
             [404, ''],
-            Endpoints::publicKeyResponseAt(PublicKeySchedule::of([]), 'pkcs', null, $this->now)
+            Endpoints::publicKeyResponseAt(PublicKeySchedule::of([]), 'spki', null, $this->now)
         );
     }
 
@@ -216,7 +247,7 @@ final class PublicKeyResponseAtTest extends TestCase
         foreach (['abc', '-1', '1.5', ' 12', '+5', '4294967296', '12345678901'] as $malformed) {
             $this->assertSame(
                 [400, ''],
-                Endpoints::publicKeyResponseAt($this->schedule, 'pkcs', $malformed, $this->now),
+                Endpoints::publicKeyResponseAt($this->schedule, 'spki', $malformed, $this->now),
                 'date ' . var_export($malformed, true)
             );
         }
@@ -233,23 +264,17 @@ final class PublicKeyResponseAtTest extends TestCase
         foreach ([['1'], true, 1.5, new \stdClass()] as $wrong) {
             $this->assertSame(
                 [400, ''],
-                Endpoints::publicKeyResponseAt($this->schedule, 'pkcs', $wrong, $this->now),
+                Endpoints::publicKeyResponseAt($this->schedule, 'spki', $wrong, $this->now),
                 'date ' . var_export($wrong, true)
             );
         }
         $this->assertSame(
             [200, $this->answer($this->thisWeek)],
             Endpoints::publicKeyResponseAt(
-                $this->schedule, 'pkcs', (int) self::minutes($this->now), $this->now
+                $this->schedule, 'spki', (int) self::minutes($this->now), $this->now
             ),
             'an int is accepted as its digits'
         );
-    }
-
-    public function testTheFormatMustBeSpkiOrPkcs(): void
-    {
-        $this->expectException(OwidException::class);
-        Endpoints::publicKeyResponseAt($this->schedule, 'der', null, $this->now);
     }
 
     /**
@@ -258,7 +283,7 @@ final class PublicKeyResponseAtTest extends TestCase
      */
     public function testTheMomentOfTheRequestDefaultsToNow(): void
     {
-        [$status, $body] = Endpoints::publicKeyResponseAt($this->schedule, 'pkcs', null);
+        [$status, $body] = Endpoints::publicKeyResponseAt($this->schedule, 'spki', null);
         $this->assertSame(200, $status);
         $this->assertStringContainsString('BEGIN PUBLIC KEY', $body);
         $started = array_values(array_filter(
@@ -266,6 +291,6 @@ final class PublicKeyResponseAtTest extends TestCase
             static fn (DatedPublicKey $key): bool =>
                 $key->startsAt <= new DateTimeImmutable('now', new DateTimeZone('UTC'))
         ));
-        $this->assertSame($started[count($started) - 1]->publicKeyPem, json_decode($body, true)['publicKeySPKI']);
+        $this->assertSame($started[count($started) - 1]->publicKeyPem, json_decode($body, true)['publicKey']);
     }
 }

@@ -167,7 +167,7 @@ anything older than a few days means asking for the key that was in force on
 the date the identifier carries.
 
 `PublicKeyFetch` asks the creator for that key. The request is
-`/owid/api/v{n}/public-key?date={minutes}&format=pkcs`, where the version in
+`/owid/api/v{n}/public-key?date={minutes}&format=spki`, where the version in
 the path is the version byte of the identifier being checked and the minutes
 are counted from 2020-01-01 in the same way the identifier stores its date. A
 creator that ignores the parameter answers with its current key, and where its
@@ -265,6 +265,12 @@ key end point with `Endpoints::publicKeyResponseAt`, which returns the status
 code and body for the request: the key in force at the date asked, the key in
 force now for a request without a date or with a date later than now, 404
 where no key is in force, and 400 where the date is not a count of minutes.
+The answer is a JSON object with four fields. `format` is the encoding of the
+key, `publicKey` is the key in that encoding, and `validFrom` and `validTo`
+are the UTC moments the key came into force and the next key starts. The only
+format defined is `spki`, a Subject Public Key Info PEM. It is what a request
+without a `format` parameter receives, and a request for any other value is
+answered 400 rather than in an encoding the caller did not ask for.
 
 ## How an OWID comes into existence
 

@@ -523,13 +523,18 @@ $runner->check(
 
 // Endpoints.
 $endpointCreator = new Creator('example.com', Crypto::new());
+$spkiAnswer = json_decode(Endpoints::publicKeyResponse($endpointCreator, 'spki'), true);
 $runner->check(
-    'public key response returns PEM for spki',
-    str_contains(Endpoints::publicKeyResponse($endpointCreator, 'spki'), 'BEGIN PUBLIC KEY')
+    'public key response returns the PEM as publicKey and echoes the spki format',
+    $spkiAnswer['format'] === 'spki' && str_contains($spkiAnswer['publicKey'], 'BEGIN PUBLIC KEY')
 );
 $runner->check(
-    'public key response returns PEM for pkcs',
-    str_contains(Endpoints::publicKeyResponse($endpointCreator, 'pkcs'), 'BEGIN PUBLIC KEY')
+    'public key response reads a request with no format as spki',
+    json_decode(Endpoints::publicKeyResponse($endpointCreator), true)['format'] === 'spki'
+);
+$runner->checkThrows(
+    'public key response rejects pkcs',
+    fn () => Endpoints::publicKeyResponse($endpointCreator, 'pkcs')
 );
 $runner->checkThrows(
     'public key response rejects unknown format',
@@ -781,7 +786,7 @@ $runner->check(
 $runner->check(
     'the fetch URL names the version, the minute and the well known path',
     \SwanCommunity\Owid\PublicKeyFetch::publicKeyUrl($genuine, 'https')
-        === 'https://51d.es/owid/api/v3/public-key?date=3510720&format=pkcs'
+        === 'https://51d.es/owid/api/v3/public-key?date=3510720&format=spki'
 );
 \SwanCommunity\Owid\PublicKeyFetch::clearCache();
 $served = [];
@@ -812,20 +817,30 @@ $runner->check(
 \SwanCommunity\Owid\PublicKeyFetch::clearCache();
 $answered = \SwanCommunity\Owid\Endpoints::publicKeyResponseAt(
     $published,
-    'pkcs',
+    'spki',
     (string) KeyFixtures::IDENTIFIER_MINUTES,
     new \DateTimeImmutable('2026-09-14T00:00:00Z')
 );
 $runner->check(
     'the end point answers the key in force at the date asked',
     $answered[0] === 200
-        && json_decode($answered[1], true)['publicKeySPKI'] === $chosenKey->publicKeyPem
+        && json_decode($answered[1], true)['format'] === 'spki'
+        && json_decode($answered[1], true)['publicKey'] === $chosenKey->publicKeyPem
         && json_decode($answered[1], true)['validFrom'] === '2026-08-31T00:00:00Z'
         && json_decode($answered[1], true)['validTo'] === '2026-09-07T00:00:00Z'
 );
 $runner->check(
+    'the end point answers 400 for a format other than spki',
+    \SwanCommunity\Owid\Endpoints::publicKeyResponseAt(
+        $published,
+        'pkcs',
+        (string) KeyFixtures::IDENTIFIER_MINUTES,
+        new \DateTimeImmutable('2026-09-14T00:00:00Z')
+    ) === [400, '']
+);
+$runner->check(
     'the end point answers 404 before the schedule begins',
-    \SwanCommunity\Owid\Endpoints::publicKeyResponseAt($published, 'pkcs', '0')[0] === 404
+    \SwanCommunity\Owid\Endpoints::publicKeyResponseAt($published, 'spki', '0')[0] === 404
 );
 
 exit($runner->summary());

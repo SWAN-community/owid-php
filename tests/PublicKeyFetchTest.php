@@ -110,7 +110,7 @@ final class PublicKeyFetchTest extends TestCase
     {
         $this->assertSame(
             'https://51d.es/owid/api/v3/public-key?date='
-                . KeyFixtures::IDENTIFIER_MINUTES . '&format=pkcs',
+                . KeyFixtures::IDENTIFIER_MINUTES . '&format=spki',
             PublicKeyFetch::publicKeyUrl(KeyFixtures::identifier(), 'https'),
             'should ask 51d.es for the key in force on 4 September 2026'
         );
@@ -127,7 +127,7 @@ final class PublicKeyFetchTest extends TestCase
         $this->assertSame(Version::Version2, $version2->version);
         $this->assertSame(
             'https://example.com/owid/api/v2/public-key?date='
-                . KeyFixtures::IDENTIFIER_MINUTES . '&format=pkcs',
+                . KeyFixtures::IDENTIFIER_MINUTES . '&format=spki',
             PublicKeyFetch::publicKeyUrl($version2, 'https'),
             'should ask the version 2 end point'
         );
@@ -139,7 +139,7 @@ final class PublicKeyFetchTest extends TestCase
         $owid = $creator->create('payload');
         $this->assertSame(
             'https://example.com/owid/api/v3/public-key?date='
-                . Io::minutesSinceBase($owid->date) . '&format=pkcs',
+                . Io::minutesSinceBase($owid->date) . '&format=spki',
             PublicKeyFetch::publicKeyUrl($owid, 'https'),
             'should name the minute the OWID was signed'
         );
@@ -179,7 +179,7 @@ final class PublicKeyFetchTest extends TestCase
     {
         $owid = KeyFixtures::identifier();
         $endPoint = $this->endPoint();
-        $undated = $endPoint->base . '/owid/api/v3/public-key?format=pkcs';
+        $undated = $endPoint->base . '/owid/api/v3/public-key?format=spki';
         $this->assertSame(
             SignatureStatus::KeyUnavailable,
             PublicKeyFetch::signatureStatusAtUrl($owid, $undated),
@@ -200,7 +200,7 @@ final class PublicKeyFetchTest extends TestCase
         // so the end point answers 404 the way the cloud does.
         $before = KeyFixtures::scheduledKeys()[0]['startsAt']->modify('-14 days');
         $url = $endPoint->base . '/owid/api/v3/public-key?date='
-            . Io::minutesSinceBase($before) . '&format=pkcs';
+            . Io::minutesSinceBase($before) . '&format=spki';
         $this->assertSame(
             SignatureStatus::KeyUnavailable,
             PublicKeyFetch::signatureStatusAtUrl($owid, $url),
@@ -212,7 +212,7 @@ final class PublicKeyFetchTest extends TestCase
     public function testARefusedRequestCarriesTheStatusAndTheCode(): void
     {
         $endPoint = $this->endPoint();
-        $url = $endPoint->base . '/owid/api/v3/public-key?date=0&format=pkcs';
+        $url = $endPoint->base . '/owid/api/v3/public-key?date=0&format=spki';
         try {
             PublicKeyFetch::publicKeyPemAtUrl($url, '51d.es');
             $this->fail('a date the schedule does not reach is refused');
@@ -231,7 +231,7 @@ final class PublicKeyFetchTest extends TestCase
     public function testAMalformedDateIsRefusedByTheEndPoint(): void
     {
         $endPoint = $this->endPoint();
-        $url = $endPoint->base . '/owid/api/v3/public-key?date=abc&format=pkcs';
+        $url = $endPoint->base . '/owid/api/v3/public-key?date=abc&format=spki';
         try {
             PublicKeyFetch::publicKeyPemAtUrl($url, '51d.es');
             $this->fail('a malformed date is refused');
@@ -356,7 +356,7 @@ final class PublicKeyFetchTest extends TestCase
             return [200, Endpoints::publicKeyAnswer(self::distinctPem((int) $minute), null, null, null)];
         };
         $urlFor = static fn (int $minute): string =>
-            'https://example.invalid/owid/api/v3/public-key?date=' . $minute . '&format=pkcs';
+            'https://example.invalid/owid/api/v3/public-key?date=' . $minute . '&format=spki';
         for ($minute = 1; $minute <= PublicKeyFetch::MAXIMUM_CACHED_KEYS + 1; $minute++) {
             PublicKeyFetch::publicKeyPemAtUrl($urlFor($minute), 'example.invalid', $counting);
         }
@@ -520,7 +520,7 @@ final class PublicKeyFetchTest extends TestCase
         self::pemAt($endPoint, $recent);
         self::pemAt($endPoint, $now->modify('+7 days'));
         PublicKeyFetch::publicKeyPemAtUrl(
-            $endPoint->base . '/owid/api/v3/public-key?format=pkcs',
+            $endPoint->base . '/owid/api/v3/public-key?format=spki',
             KeyFixtures::IDENTIFIER_DOMAIN
         );
         $old = $now->modify('-' . (PublicKeyFetch::CLOCK_DRIFT_ALLOWANCE_MINUTES + 1) . ' minutes');
@@ -635,11 +635,11 @@ final class PublicKeyFetchTest extends TestCase
             $requests[] = $url;
             $parameters = [];
             parse_str((string) parse_url($url, PHP_URL_QUERY), $parameters);
-            return Endpoints::publicKeyResponseAt($schedule, 'pkcs', $parameters['date'] ?? null);
+            return Endpoints::publicKeyResponseAt($schedule, $parameters['format'] ?? null, $parameters['date'] ?? null);
         };
         $statusOf = fn (Owid $owid): SignatureStatus => PublicKeyFetch::signatureStatusAtUrl(
             $owid,
-            'https://creator.test/owid/api/v3/public-key?date=' . Io::minutesSinceBase($owid->date) . '&format=pkcs',
+            'https://creator.test/owid/api/v3/public-key?date=' . Io::minutesSinceBase($owid->date) . '&format=spki',
             [],
             $creator
         );
@@ -676,7 +676,7 @@ final class PublicKeyFetchTest extends TestCase
             $asked[] = is_string($date) ? $date : null;
             return Endpoints::publicKeyResponseAt(
                 $schedule,
-                'pkcs',
+                $parameters['format'] ?? null,
                 $date,
                 self::moment('2026-09-14T00:00:00Z')
             );
@@ -686,7 +686,7 @@ final class PublicKeyFetchTest extends TestCase
     /** The URL the fetch would use for the identifier at the stand in creator. */
     private static function urlOf(Owid $owid): string
     {
-        return 'https://creator.test/owid/api/v3/public-key?date=' . Io::minutesSinceBase($owid->date) . '&format=pkcs';
+        return 'https://creator.test/owid/api/v3/public-key?date=' . Io::minutesSinceBase($owid->date) . '&format=spki';
     }
 
     /**
@@ -742,7 +742,7 @@ final class PublicKeyFetchTest extends TestCase
             $requests++;
             $parameters = [];
             parse_str((string) parse_url($url, PHP_URL_QUERY), $parameters);
-            return Endpoints::publicKeyResponseAt($schedule, 'pkcs', $parameters['date'] ?? null);
+            return Endpoints::publicKeyResponseAt($schedule, $parameters['format'] ?? null, $parameters['date'] ?? null);
         };
         $live = self::signedAt('creator.test', $rotation->modify('+2 minutes'), $first);
         $this->assertSame(
@@ -801,13 +801,47 @@ final class PublicKeyFetchTest extends TestCase
             PublicKeyFetch::signatureStatusAtUrl($owid, $endPoint->urlFor($owid))
         );
         $contradictory = static fn (string $url, float $timeout): array => [200, json_encode([
-            'publicKeySPKI' => KeyFixtures::schedule()->keys()[0]->publicKeyPem,
+            'format' => 'spki',
+            'publicKey' => KeyFixtures::schedule()->keys()[0]->publicKeyPem,
             'validFrom' => '2026-08-31T00:00:00Z',
             'validTo' => '2026-08-24T00:00:00Z',
         ])];
         $this->assertSame(
             SignatureStatus::InvalidKey,
             PublicKeyFetch::signatureStatusAtUrl($owid, $endPoint->urlFor($owid), [], $contradictory)
+        );
+    }
+
+    /**
+     * An answer that states a format other than spki carries a key in an
+     * encoding this library does not read, and is reported as a key that
+     * cannot be read rather than parsed as if it were spki.
+     */
+    public function testAnAnswerStatingAnotherFormatIsAKeyThatCannotBeRead(): void
+    {
+        $owid = KeyFixtures::identifier();
+        $pem = KeyFixtures::schedule()->keyFor($owid)->publicKeyPem;
+        $otherFormat = static fn (string $url, float $timeout): array => [200, json_encode([
+            'format' => 'pkcs',
+            'publicKey' => $pem,
+            'validFrom' => null,
+            'validTo' => null,
+        ])];
+        $this->assertSame(
+            SignatureStatus::InvalidKey,
+            PublicKeyFetch::signatureStatus($owid, 'https', [], $otherFormat),
+            'the key is the right one, but the answer says it is not in the encoding asked for'
+        );
+        $stated = static fn (string $url, float $timeout): array => [200, json_encode([
+            'format' => 'spki',
+            'publicKey' => $pem,
+            'validFrom' => null,
+            'validTo' => null,
+        ])];
+        $this->assertSame(
+            SignatureStatus::SignatureValid,
+            PublicKeyFetch::signatureStatus($owid, 'https', [], $stated),
+            'the same key stated as spki is read'
         );
     }
 

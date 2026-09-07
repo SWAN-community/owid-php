@@ -55,7 +55,8 @@ if ($answer === KeyEndPoint::ANSWER_BROKEN_KEY) {
     // Shaped like a PEM, with a body no key can be read out of. It is sent as the JSON form without the check a creator applies, because that check is what catches it.
     header('Content-Type: application/json');
     echo json_encode([
-        'publicKeySPKI' => "-----BEGIN PUBLIC KEY-----\nbm90IGEga2V5\n-----END PUBLIC KEY-----\n",
+        'format' => 'spki',
+        'publicKey' => "-----BEGIN PUBLIC KEY-----\nbm90IGEga2V5\n-----END PUBLIC KEY-----\n",
         'validFrom' => null,
         'validTo' => null,
     ]);
@@ -91,7 +92,9 @@ if ($answer === KeyEndPoint::ANSWER_SPANLESS) {
     return;
 }
 // The answer the library's own server side helper builds, so the client is
-// tested against what a creator built on it sends.
-[$status, $body] = Endpoints::publicKeyResponseAt(KeyFixtures::schedule(), 'pkcs', $date, $moment);
+// tested against what a creator built on it sends, with the format the
+// request asked for passed through so the request the client makes is the
+// one judged.
+[$status, $body] = Endpoints::publicKeyResponseAt(KeyFixtures::schedule(), $_GET['format'] ?? null, $date, $moment);
 http_response_code($status);
 echo $body;
