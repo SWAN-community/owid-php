@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 namespace SwanCommunity\Owid;
 
+use DateTimeZone;
+use DateTimeImmutable;
 use Exception;
 
 /**
@@ -52,10 +54,10 @@ final class PublicKeyFetch
     public const TIMEOUT_SECONDS = 10.0;
 
     /**
-     * The most keys held before the cache is emptied and filled again. A
-     * bound is needed because a verifier sees identifiers from many domains
-     * and many weeks, and an unbounded store would grow for as long as the
-     * process runs.
+     * The most keys held before the cache is emptied and filled again, across
+     * every creator. A bound is needed because a verifier sees identifiers
+     * from many domains and many weeks, and an unbounded store would grow for
+     * as long as the process runs.
      */
     public const MAXIMUM_CACHED_KEYS = 1024;
 
@@ -73,17 +75,29 @@ final class PublicKeyFetch
     private const ACCEPTED_SCHEMES = ['http', 'https'];
 
     /**
-     * Keys already fetched, held against the URL they were fetched from.
+     * Keys already fetched, by the creator's key end point, which is the key
+     * URL without its date. Each end point holds the keys the creator has
+     * answered with, each with the span of minutes the creator has confirmed
+     * it for, as the earliest and latest minute.
      *
      * The specification asks implementations to cache so that verifying many
-     * identifiers does not mean repeating requests to another processor.
-     * Holding the key against the whole URL is safe because the URL names the
-     * domain, the version and the minute, and the key a creator published for
-     * a minute in the past does not change.
+     * identifiers does not mean repeating requests to another processor. The
+     * key URL carries the date of the identifier being verified, in minutes,
+     * and a creator's key changes on the order of a week. Keyed by the whole
+     * URL, as this cache once was, two identifiers signed a minute apart
+     * never shared an entry, so a hundred identifiers over a hundred minutes
+     * made a hundred requests for one key. Keyed by end point and span, an
+     * identifier dated between two minutes the creator has already answered
+     * for is verified without a request. A key is in force from the start of
+     * its period until the next key starts, so a key the creator confirms at
+     * two minutes was in force at every minute between them.
      *
-     * @var array<string, string>
+     * @var array<string, array<int, array{pem: string, first: int, last: int}>>
      */
     private static array $cache = [];
+
+    /** How many keys are held across every end point. */
+    private static int $heldKeys = 0;
 
     private function __construct()
     {
@@ -191,13 +205,26 @@ final class PublicKeyFetch
     }
 
     /**
-     * Empties the cache of keys already fetched. Provided so that a long
-     * running process can release the memory, and so that a test can start
-     * from a known state.
+     * Empties the cache of keys already fetched, so that the next
+     * verification of any identifier asks the creator again. This is how a
+     * long running process drops a key it has learned it should no longer
+     * trust, after a creator rotates its key following a compromise, and how
+     * a test starts from a known state.
      */
     public static function clearCache(): void
     {
         self::$cache = [];
+        self::$heldKeys = 0;
+    }
+
+    /**
+     * How many keys the cache holds, for the tests.
+     *
+     * @internal
+     */
+    public static function cachedKeyCount(): int
+    {
+        return self::$heldKeys;
     }
 
     /**
@@ -226,8 +253,8 @@ final class PublicKeyFetch
     }
 
     /**
-     * Fetches the PEM at the URL, answering from the cache where the same URL
-     * has already been fetched.
+     * Fetches the PEM at the URL, answering from the cache where the creator
+     * has already confirmed a key for the minute the URL names.
      *
      * @internal
      *
@@ -238,15 +265,121 @@ final class PublicKeyFetch
         string $domain,
         ?callable $transport = null
     ): string {
-        if (isset(self::$cache[$url])) {
-            return self::$cache[$url];
+        $endPoint = self::endPointOf($url);
+        $minute = self::minuteOf($url);
+        $held = self::heldPem($endPoint, $minute);
+        if ($held !== null) {
+            return $held;
         }
         $pem = self::read($url, $domain, $transport);
-        if (count(self::$cache) >= self::MAXIMUM_CACHED_KEYS) {
-            self::$cache = [];
-        }
-        self::$cache[$url] = $pem;
+        self::hold($endPoint, $minute, $pem);
         return $pem;
+    }
+
+    /**
+     * The key URL without its query, which names the scheme, the creator and
+     * the version, and so the key end point being asked.
+     */
+    private static function endPointOf(string $url): string
+    {
+        $query = strpos($url, '?');
+        return $query === false ? $url : substr($url, 0, $query);
+    }
+
+    /**
+     * The minute the cache reads the URL as asking about.
+     *
+     * The date parameter where the URL carries one, and otherwise now,
+     * because a creator answers a request without a date with the key in
+     * force now. A date later than now is read as now as well, because that
+     * is how a creator reads it. A schedule is published ahead of time and a
+     * key that has not started has signed nothing, so the creator answers a
+     * future date with the key in force now, and that answer must be held
+     * against now rather than against a minute the creator has not spoken
+     * for. Held against the future minute, the key would still be served for
+     * that minute after the creator had rotated, and a genuine identifier
+     * signed then would read as not matching.
+     */
+    private static function minuteOf(string $url): int
+    {
+        $now = Io::minutesSinceBase(
+            new DateTimeImmutable('now', new DateTimeZone('UTC'))
+        );
+        $parameters = [];
+        parse_str((string) parse_url($url, PHP_URL_QUERY), $parameters);
+        $date = $parameters['date'] ?? null;
+        if (is_string($date) && $date !== '' && ctype_digit($date)) {
+            return min((int) $date, $now);
+        }
+        return $now;
+    }
+
+    /**
+     * The key held for the end point whose confirmed span covers the minute,
+     * or null where no held key does.
+     */
+    private static function heldPem(string $endPoint, int $minute): ?string
+    {
+        foreach (self::$cache[$endPoint] ?? [] as $key) {
+            if ($key['first'] <= $minute && $minute <= $key['last']) {
+                return $key['pem'];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Records that the creator answered the minute with the key.
+     *
+     * A key already held for the end point has its span widened to take in
+     * the minute. A key not held before is added, emptying the cache first
+     * when it is full, because the domains and dates asked about come from
+     * the identifiers presented to this process and the cache must not grow
+     * on their input.
+     */
+    private static function hold(string $endPoint, int $minute, string $pem): void
+    {
+        foreach (self::$cache[$endPoint] ?? [] as $index => $key) {
+            if ($key['pem'] === $pem && self::widen($endPoint, $index, $minute)) {
+                return;
+            }
+        }
+        if (self::$heldKeys >= self::MAXIMUM_CACHED_KEYS) {
+            self::$cache = [];
+            self::$heldKeys = 0;
+        }
+        self::$cache[$endPoint][] = ['pem' => $pem, 'first' => $minute, 'last' => $minute];
+        self::$heldKeys++;
+    }
+
+    /**
+     * Widens the span of the held key at the index to take in the minute,
+     * and says whether the minute is now within it.
+     *
+     * The span is not widened across a minute the creator has answered with
+     * another key for, because that would mean the creator had gone back to
+     * a key it had left, and the minutes between the two spans are then not
+     * this key's to claim. The key is held again as a separate span instead.
+     */
+    private static function widen(string $endPoint, int $index, int $minute): bool
+    {
+        $key = self::$cache[$endPoint][$index];
+        if ($key['first'] <= $minute && $minute <= $key['last']) {
+            return true;
+        }
+        $from = min($minute, $key['first']);
+        $to = max($minute, $key['last']);
+        foreach (self::$cache[$endPoint] as $otherIndex => $other) {
+            if ($otherIndex !== $index && $other['last'] > $from && $other['first'] < $to) {
+                return false;
+            }
+        }
+        if ($minute < $key['first']) {
+            self::$cache[$endPoint][$index]['first'] = $minute;
+        } else {
+            self::$cache[$endPoint][$index]['last'] = $minute;
+        }
+        return true;
     }
 
     /**

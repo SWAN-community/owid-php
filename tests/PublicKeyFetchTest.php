@@ -338,11 +338,15 @@ final class PublicKeyFetchTest extends TestCase
      */
     public function testTheCacheIsBounded(): void
     {
-        $pem = KeyFixtures::schedule()->keyFor(KeyFixtures::identifier())->publicKeyPem;
         $requests = 0;
-        $counting = function (string $url, float $timeout) use ($pem, &$requests): array {
+        // Every minute is answered with a different key, which is the worst a
+        // creator can do to the cache, so the bound is on keys rather than
+        // on the minutes one key covers.
+        $counting = function (string $url, float $timeout) use (&$requests): array {
             $requests++;
-            return [200, $pem];
+            $minute = substr($url, strpos($url, 'date=') + 5);
+            $minute = substr($minute, 0, strpos($minute, '&'));
+            return [200, "-----BEGIN PUBLIC KEY-----\n" . $minute . "\n-----END PUBLIC KEY-----\n"];
         };
         $urlFor = static fn (int $minute): string =>
             'https://example.invalid/owid/api/v3/public-key?date=' . $minute . '&format=pkcs';
@@ -350,6 +354,11 @@ final class PublicKeyFetchTest extends TestCase
             PublicKeyFetch::publicKeyPemAtUrl($urlFor($minute), 'example.invalid', $counting);
         }
         $this->assertSame(PublicKeyFetch::MAXIMUM_CACHED_KEYS + 1, $requests);
+        $this->assertLessThanOrEqual(
+            PublicKeyFetch::MAXIMUM_CACHED_KEYS,
+            PublicKeyFetch::cachedKeyCount(),
+            'held ' . PublicKeyFetch::cachedKeyCount() . ' of at most ' . PublicKeyFetch::MAXIMUM_CACHED_KEYS
+        );
         // The arrival past the bound emptied the store, so the first URL is
         // fetched again rather than answered from what was held.
         PublicKeyFetch::publicKeyPemAtUrl($urlFor(1), 'example.invalid', $counting);
@@ -361,6 +370,159 @@ final class PublicKeyFetchTest extends TestCase
             $counting
         );
         $this->assertSame(PublicKeyFetch::MAXIMUM_CACHED_KEYS + 2, $requests);
+    }
+
+    /** A moment given as RFC 3339 text. */
+    private static function moment(string $text): DateTimeImmutable
+    {
+        return new DateTimeImmutable($text, new DateTimeZone('UTC'));
+    }
+
+    /** The PEM the fetch answers for an identifier from the fixture domain dated at the moment. */
+    private static function pemAt(KeyEndPoint $endPoint, DateTimeImmutable $moment): string
+    {
+        return PublicKeyFetch::publicKeyPemAtUrl(
+            $endPoint->urlFor(self::crafted(Version::Version3, KeyFixtures::IDENTIFIER_DOMAIN, $moment)),
+            KeyFixtures::IDENTIFIER_DOMAIN
+        );
+    }
+
+    /** The PEM the published schedule says was in force at the moment. */
+    private static function inForce(DateTimeImmutable $moment): string
+    {
+        $key = KeyFixtures::schedule()->keyInForce($moment);
+        self::assertNotNull($key);
+        return $key->publicKeyPem;
+    }
+
+    /**
+     * A key the creator has confirmed for two minutes is served for every
+     * minute between them without a request, because a key is in force from
+     * the start of its period until the next key starts. A minute outside
+     * every confirmed span is asked about.
+     */
+    public function testAMinuteBetweenTwoConfirmedMinutesIsServedFromTheCache(): void
+    {
+        $endPoint = $this->endPoint();
+        // The week of 31 August 2026, which the fixture identifier was signed
+        // in, and which is wholly in the past so the cache reads each minute
+        // as itself rather than as now.
+        $first = self::moment('2026-08-31T00:01:00Z');
+        $last = self::moment('2026-09-06T23:00:00Z');
+        $pem = self::pemAt($endPoint, $first);
+        $this->assertSame($pem, self::pemAt($endPoint, $last), 'one key covers the week');
+        $this->assertCount(2, $endPoint->dates(), 'the two ends of the span were asked about');
+        foreach ([$first->modify('+1 minute'), $first->modify('+3 days'), $last->modify('-1 minute')] as $between) {
+            $this->assertSame($pem, self::pemAt($endPoint, $between));
+        }
+        $this->assertCount(2, $endPoint->dates(), 'a minute between two confirmed minutes is not asked about');
+        $this->assertSame(1, PublicKeyFetch::cachedKeyCount(), 'one key is held however many minutes it covers');
+        $this->assertNotSame(
+            $pem,
+            self::pemAt($endPoint, $first->modify('-2 minutes')),
+            'a minute in the week before is the earlier week\'s key'
+        );
+        $this->assertCount(3, $endPoint->dates(), 'a minute before the span is asked about');
+        $this->assertSame(2, PublicKeyFetch::cachedKeyCount(), 'the earlier week\'s key is held as a second key');
+    }
+
+    /**
+     * The case that made the cache almost useless when it was keyed by the
+     * whole URL. A hundred identifiers with a hundred different minutes
+     * inside one key's period cost a hundred requests then. With the ends of
+     * the period confirmed they cost none.
+     */
+    public function testAHundredIdentifiersInOneConfirmedPeriodMakeNoRequest(): void
+    {
+        $endPoint = $this->endPoint();
+        $start = self::moment('2026-09-01T00:00:00Z');
+        self::pemAt($endPoint, $start);
+        self::pemAt($endPoint, $start->modify('+100 minutes'));
+        for ($i = 1; $i <= 100; $i++) {
+            self::pemAt($endPoint, $start->modify('+' . $i . ' minutes'));
+        }
+        $this->assertCount(
+            2,
+            $endPoint->dates(),
+            'a hundred identifiers over a hundred minutes made no request once both ends of the span were known'
+        );
+    }
+
+    /**
+     * A key is only ever served for a minute inside the span the creator has
+     * confirmed it for. Where the creator rotated between two confirmed
+     * minutes, the minutes between them belong to neither key until the
+     * creator is asked, and every answer agrees with the published schedule.
+     */
+    public function testAKeyIsNeverServedForAMinuteOutsideItsConfirmedSpan(): void
+    {
+        $endPoint = $this->endPoint();
+        $rotation = self::moment('2026-08-31T00:00:00Z');
+        // The start of the week before the rotation and the end of the week
+        // after it, so the two keys are held with the rotation between.
+        self::pemAt($endPoint, $rotation->modify('-7 days'));
+        self::pemAt($endPoint, $rotation->modify('+7 days -1 minute'));
+        $this->assertCount(2, $endPoint->dates());
+        $this->assertSame(2, PublicKeyFetch::cachedKeyCount());
+
+        // Every minute across the rotation, in an order that walks in from
+        // both sides, is answered with the key the schedule gives, whether
+        // from the cache or by asking.
+        $offsets = ['-1 minute', '+0 minutes', '-2 minutes', '+1 minute', '-84 hours', '+84 hours',
+            '-3 minutes', '+2 minutes', '-1 minute', '+0 minutes'];
+        foreach ($offsets as $offset) {
+            $moment = $rotation->modify($offset);
+            $this->assertSame(
+                self::inForce($moment),
+                self::pemAt($endPoint, $moment),
+                'the key served for ' . $moment->format(DATE_ATOM)
+            );
+        }
+        $this->assertSame(2, PublicKeyFetch::cachedKeyCount(), 'two keys are held, each with its own span');
+        $asked = count($endPoint->dates());
+        $this->assertTrue(
+            $asked > 2 && $asked < 2 + count($offsets),
+            'some minutes were asked about and some were served: ' . $asked
+        );
+
+        // The minute either side of the rotation is now confirmed, so nothing
+        // across the whole fortnight needs asking.
+        for ($moment = $rotation->modify('-7 days'); $moment < $rotation->modify('+7 days'); $moment = $moment->modify('+1 hour')) {
+            $this->assertSame(
+                self::inForce($moment),
+                self::pemAt($endPoint, $moment),
+                'the key served for ' . $moment->format(DATE_ATOM)
+            );
+        }
+        $this->assertCount($asked, $endPoint->dates(), 'both spans are fully confirmed, so nothing was asked');
+    }
+
+    /**
+     * A date later than now is held against now, because a creator answers a
+     * future date with the key in force now and a key held against a minute
+     * the creator has not spoken for would be served for that minute after
+     * the creator had rotated. Two future dates therefore share one request,
+     * and so does a request with no date.
+     */
+    public function testAFutureDateIsHeldAgainstNow(): void
+    {
+        $endPoint = $this->endPoint();
+        $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $started = Io::minutesSinceBase($now);
+        self::pemAt($endPoint, $now->modify('+7 days'));
+        self::pemAt($endPoint, $now->modify('+14 days'));
+        PublicKeyFetch::publicKeyPemAtUrl(
+            $endPoint->base . '/owid/api/v3/public-key?format=pkcs',
+            KeyFixtures::IDENTIFIER_DOMAIN
+        );
+        if (Io::minutesSinceBase(new DateTimeImmutable('now', new DateTimeZone('UTC'))) !== $started) {
+            $this->markTestSkipped('the minute changed during the test, so the calls were not all about the same now');
+        }
+        $this->assertCount(
+            1,
+            $endPoint->dates(),
+            'two future dates and no date are all now, and now was asked about once'
+        );
     }
 
     /**
