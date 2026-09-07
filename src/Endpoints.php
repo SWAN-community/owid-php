@@ -32,8 +32,9 @@ use DateTimeZone;
  * The mandatory end points are the creator end point at
  * /owid/api/v{version}/creator returning JSON with the domain, common name,
  * and public key of the creator, and the public key end point at
- * /owid/api/v{version}/public-key returning the public key as PEM text where
- * the format query parameter must be spki or pkcs.
+ * /owid/api/v{version}/public-key returning the public key as a JSON object
+ * that states the key and the moments it is valid from and to, where the
+ * format query parameter must be spki or pkcs.
  *
  * A creator that rotates its signing key answers the optional date parameter
  * of the public key end point with publicKeyResponseAt, which chooses from
