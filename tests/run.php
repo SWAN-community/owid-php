@@ -523,11 +523,6 @@ $runner->check(
 
 // Endpoints.
 $endpointCreator = new Creator('example.com', Crypto::new());
-$body = Endpoints::creatorResponse($endpointCreator, 'Example Org', 'https://terms.example');
-$runner->check('creator response has publicKeySPKI field', str_contains($body, 'publicKeySPKI'));
-$parsedBody = json_decode($body, true);
-$runner->check('creator response domain is example.com', $parsedBody['domain'] === 'example.com');
-$runner->check('creator response name is Example Org', $parsedBody['name'] === 'Example Org');
 $runner->check(
     'public key response returns PEM for spki',
     str_contains(Endpoints::publicKeyResponse($endpointCreator, 'spki'), 'BEGIN PUBLIC KEY')
@@ -539,10 +534,6 @@ $runner->check(
 $runner->checkThrows(
     'public key response rejects unknown format',
     fn () => Endpoints::publicKeyResponse($endpointCreator, 'other')
-);
-$runner->check(
-    'creator path is correct',
-    Endpoints::creatorPath(Version::Version3) === '/owid/api/v3/creator'
 );
 $runner->check(
     'public key path is correct',

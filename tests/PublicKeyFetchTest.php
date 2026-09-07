@@ -53,8 +53,8 @@ final class PublicKeyFetchTest extends TestCase
 
     protected function setUp(): void
     {
-        // Keys are held by creator end point, and a test that counts
-        // requests has to start from nothing held.
+        // Keys are held by the creator's key end point, and a test that
+        // counts requests has to start from nothing held.
         PublicKeyFetch::clearCache();
     }
 
@@ -299,9 +299,10 @@ final class PublicKeyFetchTest extends TestCase
     }
 
     /**
-     * Keys are held by creator end point, each against the span the creator
-     * stated for it, so two identifiers from different weeks fetch two
-     * different keys and a key held for one week never answers for another.
+     * Keys are held by the creator's key end point, each against the span
+     * the creator stated for it, so two identifiers from different weeks
+     * fetch two different keys and a key held for one week never answers
+     * for another.
      * A store keyed by domain alone would hand the second identifier the
      * first one's key.
      */

@@ -29,9 +29,7 @@ use DateTimeZone;
  * specification. These are framework agnostic. They return the path and body
  * so that any HTTP server can serve them.
  *
- * The mandatory end points are the creator end point at
- * /owid/api/v{version}/creator returning JSON with the domain, common name,
- * and public key of the creator, and the public key end point at
+ * The mandatory end point is the public key end point at
  * /owid/api/v{version}/public-key returning the public key as a JSON object
  * that states the key and the moments it is valid from and to, where the
  * format query parameter must be spki or pkcs.
@@ -43,46 +41,12 @@ use DateTimeZone;
 final class Endpoints
 {
     /**
-     * Returns the path of the creator end point for the version provided. For
-     * example /owid/api/v3/creator.
-     */
-    public static function creatorPath(Version $version): string
-    {
-        return '/owid/api/v' . $version->asByte() . '/creator';
-    }
-
-    /**
      * Returns the path of the public key end point for the version provided.
      * For example /owid/api/v3/public-key.
      */
     public static function publicKeyPath(Version $version): string
     {
         return '/owid/api/v' . $version->asByte() . '/public-key';
-    }
-
-    /**
-     * Returns the JSON body for the creator end point. The fields match the
-     * names required by the specification.
-     *
-     * @throws OwidException when the public key can not be exported or the
-     *                       JSON can not be produced.
-     */
-    public static function creatorResponse(
-        Creator $creator,
-        string $name,
-        string $contractUrl = ''
-    ): string {
-        $body = [
-            'domain' => $creator->domain(),
-            'name' => $name,
-            'publicKeySPKI' => $creator->crypto()->subjectPublicKeyInfo(),
-            'contractURL' => $contractUrl,
-        ];
-        $json = json_encode($body, JSON_UNESCAPED_SLASHES);
-        if ($json === false) {
-            throw OwidException::key(json_last_error_msg());
-        }
-        return $json;
     }
 
     /**

@@ -38,24 +38,6 @@ final class EndpointsTest extends TestCase
     }
 
     /**
-     * The creator end point body contains the JSON fields named in the
-     * specification.
-     */
-    public function testCreatorResponseFields(): void
-    {
-        $creator = $this->newCreator();
-        $body = Endpoints::creatorResponse($creator, 'Example Org', 'https://terms.example');
-        $this->assertStringContainsString('publicKeySPKI', $body);
-        $this->assertStringContainsString('contractURL', $body);
-        $parsed = json_decode($body, true);
-        $this->assertIsArray($parsed);
-        $this->assertSame('example.com', $parsed['domain']);
-        $this->assertSame('Example Org', $parsed['name']);
-        $this->assertSame('https://terms.example', $parsed['contractURL']);
-        $this->assertStringContainsString('BEGIN PUBLIC KEY', $parsed['publicKeySPKI']);
-    }
-
-    /**
      * The public key end point returns the PEM for the valid formats and
      * rejects unknown formats.
      */
@@ -78,11 +60,10 @@ final class EndpointsTest extends TestCase
     }
 
     /**
-     * The paths match the well known end points in the specification.
+     * The path matches the well known end point in the specification.
      */
     public function testPaths(): void
     {
-        $this->assertSame('/owid/api/v3/creator', Endpoints::creatorPath(Version::Version3));
         $this->assertSame('/owid/api/v3/public-key', Endpoints::publicKeyPath(Version::Version3));
     }
 }
