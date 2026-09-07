@@ -63,19 +63,17 @@ final class PublicKeyFetch
 
     /**
      * How far a creator's clock may run ahead of or behind this one's, in
-     * minutes. A minute closer to now than this, or later, is asked about
-     * rather than served from the cache, and is not held.
+     * minutes.
      *
-     * A creator reads a date later than its own now as now, and answers with
-     * the key in force now. Within this window this process cannot tell
-     * whether the creator read the minute as its past or as its present, so
-     * the answer says nothing certain about the minute. An identifier signed
-     * just after a rotation by a creator whose clock runs ahead would
-     * otherwise be served the old key from a span confirmed up to now, and
-     * would read as not matching until this clock caught up. Identifiers
-     * dated within the window are asked about once per minute per creator,
-     * as they always were, and every older identifier is served from the
-     * spans.
+     * It is used in two places. A creator that does not state the span of the
+     * key it answers with reads a date later than its own now as now, so
+     * within this window of now this process cannot tell whether the creator
+     * read the minute as its past or as its present, and nothing learned from
+     * such an answer is held or served. And a creator's signing machines may
+     * not agree with the creator's own schedule to the minute, so an
+     * identifier dated within this window of a key's edge that does not
+     * verify under that key is checked against the neighbouring key before
+     * it is reported as not matching.
      */
     public const CLOCK_DRIFT_ALLOWANCE_MINUTES = 15;
 
@@ -101,16 +99,16 @@ final class PublicKeyFetch
      * The specification asks implementations to cache so that verifying many
      * identifiers does not mean repeating requests to another processor. The
      * key URL carries the date of the identifier being verified, in minutes,
-     * and a creator's key changes on the order of a week. Keyed by the whole
-     * URL, as this cache once was, two identifiers signed a minute apart
-     * never shared an entry, so a hundred identifiers over a hundred minutes
-     * made a hundred requests for one key. Keyed by end point and span, an
+     * and a creator's key changes on the order of a week. Keyed by end point and span rather than by the whole URL, an
      * identifier dated between two minutes the creator has already answered
      * for is verified without a request. A key is in force from the start of
      * its period until the next key starts, so a key the creator confirms at
      * two minutes was in force at every minute between them.
-     *
-     * @var array<string, array<int, array{pem: string, first: int, last: int}>>
+     * Where the creator stated the span in its answer the span is explicit
+     * and complete, and an identifier dated anywhere inside it is verified
+     * without a request. Otherwise the span grows as the creator confirms the
+     * same key for more minutes.
+     * @var array<string, array<int, array{pem: string, first: int, last: int, explicit: bool}>>
      */
     private static array $cache = [];
 
@@ -161,6 +159,7 @@ final class PublicKeyFetch
      * @throws PublicKeyFetchException when the key could not be obtained,
      *                                 with the status to report for the
      *                                 identifier.
+     *
      * @throws OwidException           when the scheme or the domain is not
      *                                 usable.
      */
@@ -261,19 +260,87 @@ final class PublicKeyFetch
         ?callable $transport = null
     ): SignatureStatus {
         try {
-            $pem = self::publicKeyPemAtUrl($url, $owid->domain, $transport);
+            $answer = self::keyAtUrl($url, $owid->domain, $transport);
         } catch (PublicKeyFetchException $failed) {
             return $failed->status();
         } catch (OwidException $refused) {
             return SignatureStatus::KeyUnavailable;
         }
-        return $owid->signatureStatus($pem, $others);
+        $status = $owid->signatureStatus($answer['pem'], $others);
+        if (
+            $status === SignatureStatus::SignatureInvalid
+            && self::neighbourVerifies($owid, $url, $answer, $others, $transport)
+        ) {
+            return SignatureStatus::SignatureValid;
+        }
+        return $status;
     }
 
     /**
-     * Fetches the PEM at the URL, answering from the cache where the creator
-     * has already confirmed a key for the minute the URL names.
+     * Whether a key neighbouring the one the OWID's own minute selected
+     * verifies the signature instead.
      *
+     * A creator's signing machines may not agree with its own schedule to the
+     * minute, so an identifier dated just after a key started may have been
+     * signed with the key before it, and one dated just before may have been
+     * signed with the key after. Where the signature does not verify under
+     * the key selected and the OWID's minute is within the clock drift
+     * allowance of the edge of the span that key is known to cover, the key
+     * for the minute just beyond that edge is asked for and tried. A key
+     * already known to cover the neighbouring minute is not asked for again,
+     * and a neighbour that turns out to be the same key is not tried again.
+     * This costs at most two more requests, and only for a signature that
+     * has already failed.
+     *
+     * @param array{pem: string, first: int, last: int, known: bool} $tried
+     * @param array<int, Owid> $others
+     */
+    private static function neighbourVerifies(
+        Owid $owid,
+        string $url,
+        array $tried,
+        array $others,
+        ?callable $transport
+    ): bool {
+        $minute = Io::minutesSinceBase($owid->date);
+        if ($minute < 0) {
+            return false;
+        }
+        if ($tried['known'] && ($minute < $tried['first'] || $minute > $tried['last'])) {
+            // The key tried was never in force at the identifier's minute, so
+            // the identifier is not near an edge of that key's span.
+            return false;
+        }
+        foreach ([$minute - self::CLOCK_DRIFT_ALLOWANCE_MINUTES, $minute + self::CLOCK_DRIFT_ALLOWANCE_MINUTES] as $at) {
+            if ($at < 0 || $at > 0xFFFFFFFF) {
+                continue;
+            }
+            if ($tried['known'] && $at >= $tried['first'] && $at <= $tried['last']) {
+                continue;
+            }
+            try {
+                $neighbour = self::keyAtUrl(
+                    self::endPointOf($url) . '?date=' . $at . '&format=pkcs',
+                    $owid->domain,
+                    $transport
+                );
+            } catch (OwidException $unobtainable) {
+                // A neighbour that cannot be obtained leaves the failure under
+                // the selected key standing.
+                continue;
+            }
+            if ($neighbour['pem'] === $tried['pem']) {
+                continue;
+            }
+            if ($owid->signatureStatus($neighbour['pem'], $others) === SignatureStatus::SignatureValid) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The PEM of the key the URL asks for. See keyAtUrl.
      * @internal
      *
      * @throws PublicKeyFetchException when the key could not be obtained.
@@ -283,17 +350,76 @@ final class PublicKeyFetch
         string $domain,
         ?callable $transport = null
     ): string {
+        return self::keyAtUrl($url, $domain, $transport)['pem'];
+    }
+
+    /**
+     * Fetches the key the URL asks for, with the span it is known to cover.
+     * Answered from the cache where a held key is known to cover the minute
+     * the URL names, and otherwise by asking the creator, whose answer states
+     * the moments the key is valid from and to and has the whole span held.
+     *
+     * @return array{pem: string, first: int, last: int, known: bool}
+     * @throws PublicKeyFetchException when the key could not be obtained, or
+     *                                 the answer is not the JSON form the
+     *                                 specification requires.
+     */
+    private static function keyAtUrl(string $url, string $domain, ?callable $transport): array
+    {
         $endPoint = self::endPointOf($url);
-        $minute = self::minuteOf($url);
-        $held = $minute === null ? null : self::heldPem($endPoint, $minute);
+        $held = self::heldFor($endPoint, $url);
         if ($held !== null) {
             return $held;
         }
-        $pem = self::read($url, $domain, $transport);
-        if ($minute !== null) {
-            self::hold($endPoint, $minute, $pem);
+        [$pem, $start, $end] = self::parseAnswer(self::read($url, $domain, $transport), $domain);
+        return self::hold($endPoint, $url, $pem, $start, $end);
+    }
+
+    /**
+     * Reads a public key answer, returning the PEM and the span in minutes
+     * since the base date. The end is the minute the next key starts. Either
+     * is null where the answer does not state it. An answer that is not the
+     * JSON form the specification requires, the PEM alone among the other
+     * forms, or that fails the checks a creator applies before sending it, is
+     * reported as a key that cannot be read.
+     *
+     * @return array{0: string, 1: ?int, 2: ?int}
+     * @throws PublicKeyFetchException
+     */
+    private static function parseAnswer(string $body, string $domain): array
+    {
+        $decoded = json_decode($body, true);
+        if (!is_array($decoded)) {
+            throw new PublicKeyFetchException(
+                'domain ' . self::quoted($domain) . ' did not answer with the JSON form the '
+                    . 'specification requires for the public key',
+                SignatureStatus::InvalidKey,
+                $domain
+            );
         }
-        return $pem;
+        try {
+            [$pem, $validFrom, $validTo] = Endpoints::validatePublicKeyAnswer($decoded, null);
+        } catch (OwidException $failed) {
+            throw new PublicKeyFetchException(
+                'domain ' . self::quoted($domain) . ' answered with a public key answer that is '
+                    . 'not valid: ' . $failed->getMessage(),
+                SignatureStatus::InvalidKey,
+                $domain,
+                0,
+                $failed
+            );
+        }
+        return [$pem, self::minutesOrNull($validFrom), self::minutesOrNull($validTo)];
+    }
+
+    /** The moment as minutes since the base date, or null. */
+    private static function minutesOrNull(?DateTimeImmutable $moment): ?int
+    {
+        if ($moment === null) {
+            return null;
+        }
+        $minutes = Io::minutesSinceBase($moment);
+        return $minutes < 0 ? null : $minutes;
     }
 
     /**
@@ -307,97 +433,131 @@ final class PublicKeyFetch
     }
 
     /**
-     * The minute the cache reads the URL as asking about, or null where the
-     * cache must not be used for the request.
+     * The minute the URL asks about, or null where it names none, and whether
+     * it lies within the clock drift allowance of now or later, which is a
+     * minute a creator that does not state its spans may have read as its
+     * present rather than as the minute named.
      *
-     * The date parameter where the URL carries one and it is at least
-     * CLOCK_DRIFT_ALLOWANCE_MINUTES behind now. A request without a date asks
-     * for the key in force now, and one dated within the allowance, or later,
-     * may be read by the creator as its present rather than as the minute
-     * named, so neither is served from the cache nor held in it.
+     * @return array{0: ?int, 1: bool}
      */
-    private static function minuteOf(string $url): ?int
+    private static function minuteAndRecency(string $url): array
     {
-        $now = Io::minutesSinceBase(
-            new DateTimeImmutable('now', new DateTimeZone('UTC'))
-        );
+        $now = Io::minutesSinceBase(new DateTimeImmutable('now', new DateTimeZone('UTC')));
         $parameters = [];
         parse_str((string) parse_url($url, PHP_URL_QUERY), $parameters);
         $date = $parameters['date'] ?? null;
         if (is_string($date) && $date !== '' && ctype_digit($date)) {
             $minute = (int) $date;
-            if ($minute <= $now - self::CLOCK_DRIFT_ALLOWANCE_MINUTES) {
-                return $minute;
-            }
+            return [$minute, $minute > $now - self::CLOCK_DRIFT_ALLOWANCE_MINUTES];
         }
-        return null;
+        return [null, false];
     }
 
     /**
-     * The key held for the end point whose confirmed span covers the minute,
-     * or null where no held key does.
-     */
-    private static function heldPem(string $endPoint, int $minute): ?string
-    {
-        foreach (self::$cache[$endPoint] ?? [] as $key) {
-            if ($key['first'] <= $minute && $minute <= $key['last']) {
-                return $key['pem'];
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Records that the creator answered the minute with the key.
+     * The key held for the end point that is known to cover the minute the
+     * URL asks about, or null where none is. A minute within the drift
+     * allowance of now is only served where the creator itself stated the
+     * span, because a span confirmed minute by minute says nothing certain
+     * about such a minute.
      *
-     * A key already held for the end point has its span widened to take in
-     * the minute. A key not held before is added, emptying the cache first
-     * when it is full, because the domains and dates asked about come from
-     * the identifiers presented to this process and the cache must not grow
-     * on their input.
+     * @return ?array{pem: string, first: int, last: int, known: bool}
      */
-    private static function hold(string $endPoint, int $minute, string $pem): void
+    private static function heldFor(string $endPoint, string $url): ?array
     {
+        [$minute, $recent] = self::minuteAndRecency($url);
+        if ($minute === null) {
+            return null;
+        }
+        foreach (self::$cache[$endPoint] ?? [] as $key) {
+            if ($key['first'] <= $minute && $minute <= $key['last'] && ($key['explicit'] || !$recent)) {
+                return ['pem' => $key['pem'], 'first' => $key['first'], 'last' => $key['last'], 'known' => true];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Records the creator's answer to the URL, being the key and, where the
+     * creator stated it, the span the key covers as the minute it came into
+     * force and the minute the next key starts. Returns the key with the span
+     * it is now known to cover.
+     *
+     * With both the start and the end the whole span is held as the creator's
+     * own statement. With the start alone the key is held from the start up
+     * to the drift allowance behind now, because no later key can have
+     * started before then. With neither the minute asked about is held on its
+     * own, as long as it is not within the drift allowance of now. A key
+     * already held for the end point has its span widened to take in the new
+     * one. A key not held before is added, emptying the cache first when it
+     * is full, because the cache must not grow on the input of whoever
+     * presents the identifiers.
+     *
+     * @return array{pem: string, first: int, last: int, known: bool}
+     */
+    private static function hold(string $endPoint, string $url, string $pem, ?int $start, ?int $end): array
+    {
+        [$minute, $recent] = self::minuteAndRecency($url);
+        $explicit = false;
+        if ($start !== null && $end !== null && $end > $start) {
+            $first = $start;
+            $last = $end - 1;
+            $explicit = true;
+        } elseif ($start !== null) {
+            $now = Io::minutesSinceBase(new DateTimeImmutable('now', new DateTimeZone('UTC')));
+            $first = $start;
+            $last = max($start, $now - self::CLOCK_DRIFT_ALLOWANCE_MINUTES);
+        } elseif ($minute !== null && !$recent) {
+            $first = $minute;
+            $last = $minute;
+        } else {
+            return ['pem' => $pem, 'first' => 0, 'last' => 0, 'known' => false];
+        }
         foreach (self::$cache[$endPoint] ?? [] as $index => $key) {
-            if ($key['pem'] === $pem && self::widen($endPoint, $index, $minute)) {
-                return;
+            if ($key['pem'] === $pem) {
+                if (self::widen($endPoint, $index, $first, $last)) {
+                    self::$cache[$endPoint][$index]['explicit'] = $key['explicit'] || $explicit;
+                    $widened = self::$cache[$endPoint][$index];
+                    return ['pem' => $pem, 'first' => $widened['first'], 'last' => $widened['last'], 'known' => true];
+                }
+                // The creator has answered with another key inside this span
+                // before, which it does not do unless it went back to a key
+                // it had left. Nothing more is held about this key.
+                return ['pem' => $pem, 'first' => 0, 'last' => 0, 'known' => false];
+            }
+        }
+        foreach (self::$cache[$endPoint] ?? [] as $other) {
+            if ($other['last'] >= $first && $other['first'] <= $last) {
+                return ['pem' => $pem, 'first' => 0, 'last' => 0, 'known' => false];
             }
         }
         if (self::$heldKeys >= self::MAXIMUM_CACHED_KEYS) {
             self::$cache = [];
             self::$heldKeys = 0;
         }
-        self::$cache[$endPoint][] = ['pem' => $pem, 'first' => $minute, 'last' => $minute];
+        self::$cache[$endPoint][] = ['pem' => $pem, 'first' => $first, 'last' => $last, 'explicit' => $explicit];
         self::$heldKeys++;
+        return ['pem' => $pem, 'first' => $first, 'last' => $last, 'known' => true];
     }
 
     /**
-     * Widens the span of the held key at the index to take in the minute,
-     * and says whether the minute is now within it.
-     *
-     * The span is not widened across a minute the creator has answered with
-     * another key for, because that would mean the creator had gone back to
-     * a key it had left, and the minutes between the two spans are then not
-     * this key's to claim. The key is held again as a separate span instead.
+     * Widens the span of the held key at the index to take in the span given,
+     * and says whether it did. The span is not widened across a minute the
+     * creator has answered with another key for, because that would mean the
+     * creator had gone back to a key it had left, and the minutes between the
+     * two spans are then not this key's to claim.
      */
-    private static function widen(string $endPoint, int $index, int $minute): bool
+    private static function widen(string $endPoint, int $index, int $first, int $last): bool
     {
         $key = self::$cache[$endPoint][$index];
-        if ($key['first'] <= $minute && $minute <= $key['last']) {
-            return true;
-        }
-        $from = min($minute, $key['first']);
-        $to = max($minute, $key['last']);
+        $first = min($first, $key['first']);
+        $last = max($last, $key['last']);
         foreach (self::$cache[$endPoint] as $otherIndex => $other) {
-            if ($otherIndex !== $index && $other['last'] > $from && $other['first'] < $to) {
+            if ($otherIndex !== $index && $other['last'] >= $first && $other['first'] <= $last) {
                 return false;
             }
         }
-        if ($minute < $key['first']) {
-            self::$cache[$endPoint][$index]['first'] = $minute;
-        } else {
-            self::$cache[$endPoint][$index]['last'] = $minute;
-        }
+        self::$cache[$endPoint][$index]['first'] = $first;
+        self::$cache[$endPoint][$index]['last'] = $last;
         return true;
     }
 

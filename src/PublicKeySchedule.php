@@ -39,10 +39,7 @@ use DateTimeZone;
  * start is at or before the date asked about. Keys are generated in batches,
  * often many weeks ahead of the weeks the keys cover, so the moment key
  * material was generated says nothing about which key signed anything and is
- * not held here at all. Selecting on a generation moment picks a key that has
- * not started yet and reports a genuine identifier as not matching, which is
- * what the .NET port did before that port was fixed.
- *
+ * not held here at all. Selecting on a generation moment picks a key that has not started yet and reports a genuine identifier as not matching.
  * A date the schedule does not reach, being one earlier than the first start,
  * has no key. That answer is reported as SignatureStatus::KeyUnavailable
  * rather than as a signature that does not match, because with no key the
@@ -138,16 +135,29 @@ final class PublicKeySchedule implements Countable
     }
 
     /**
+     * Returns the earliest start in the schedule after the key's own, being
+     * the moment the key stops being in force, or null where the key is the
+     * last in the schedule and is in force until further notice.
+     */
+    public function nextStartAfter(DatedPublicKey $key): ?DateTimeImmutable
+    {
+        $next = null;
+        foreach ($this->keys as $other) {
+            if ($other->startsAt > $key->startsAt && ($next === null || $other->startsAt < $next)) {
+                $next = $other->startsAt;
+            }
+        }
+        return $next === null ? null : DateTimeImmutable::createFromInterface($next);
+    }
+
+    /**
      * Returns the key with the latest start, or null where the schedule holds
      * no keys.
      *
      * This is not the key in force now. A creator publishes its schedule
      * ahead of time, so the last key by start is usually one whose period has
      * not begun and which has signed nothing yet. The key in force now is
-     * current(). Serving the last key where the current one was meant is the
-     * same fault as selecting by the generation moment, being a key from a
-     * period that has not started, and it is the fault the .NET port carried
-     * in its answer to a request that named no date.
+     * current(). Serving the last key where the current one was meant is the same fault as selecting by the generation moment, being a key from a period that has not started.
      */
     public function last(): ?DatedPublicKey
     {

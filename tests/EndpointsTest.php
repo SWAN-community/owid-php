@@ -64,11 +64,14 @@ final class EndpointsTest extends TestCase
         $creator = $this->newCreator();
         foreach (['spki', 'pkcs'] as $format) {
             $body = Endpoints::publicKeyResponse($creator, $format);
+            $answer = json_decode($body, true);
             $this->assertStringContainsString(
                 'BEGIN PUBLIC KEY',
-                $body,
+                $answer['publicKeySPKI'],
                 "should return the PEM for format $format"
             );
+            $this->assertNull($answer['validFrom'], 'a single key has no schedule');
+            $this->assertNull($answer['validTo']);
         }
         $this->expectException(OwidException::class);
         Endpoints::publicKeyResponse($creator, 'other');

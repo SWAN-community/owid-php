@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace SwanCommunity\Owid;
 
 use DateTimeImmutable;
+use DateTimeInterface;
 use DateTimeZone;
 
 /**
@@ -84,20 +85,137 @@ final class Endpoints
     }
 
     /**
-     * Returns the text body for the public key end point. The specification
-     * allows the key to be requested in SPKI or PKCS form. This implementation
-     * returns the SPKI PEM for both values because the importers in every
-     * implementation accept it.
+     * Returns the JSON body for the public key end point of a creator with one
+     * key and no schedule. The key is stated as publicKeySPKI and both
+     * validFrom and validTo are null, because the creator knows nothing about
+     * when the key started or will stop.
      *
-     * @throws OwidException when the format is not spki or pkcs, or the public
-     *                       key can not be exported.
+     * The specification allows the key to be requested in SPKI or PKCS form.
+     * This implementation returns the SPKI PEM for both values because the
+     * importers in every implementation accept it.
+     *
+     * @throws OwidException when the format is not spki or pkcs, or the key
+     *                       cannot be read.
      */
     public static function publicKeyResponse(Creator $creator, string $format): string
     {
-        if ($format === 'spki' || $format === 'pkcs') {
-            return $creator->crypto()->subjectPublicKeyInfo();
+        if ($format !== 'spki' && $format !== 'pkcs') {
+            throw OwidException::invalidKeyFormat($format);
         }
-        throw OwidException::invalidKeyFormat($format);
+        return self::publicKeyAnswer($creator->crypto()->subjectPublicKeyInfo(), null, null, null);
+    }
+
+    /**
+     * Returns the JSON body of the public key end point for the key and the
+     * span it covers, checked with validatePublicKeyAnswer first so that a
+     * creator never sends an answer it would itself refuse. The moment asked
+     * about, where known, is checked against the span as well.
+     *
+     * @throws OwidException when the answer would not be valid.
+     */
+    public static function publicKeyAnswer(
+        string $publicKeyPem,
+        ?DateTimeInterface $validFrom,
+        ?DateTimeInterface $validTo,
+        ?DateTimeInterface $asked
+    ): string {
+        $answer = [
+            'publicKeySPKI' => $publicKeyPem,
+            'validFrom' => self::momentText($validFrom),
+            'validTo' => self::momentText($validTo),
+        ];
+        self::validatePublicKeyAnswer($answer, $asked);
+        $body = json_encode($answer);
+        if ($body === false) {
+            throw new OwidException('the public key answer could not be written as JSON');
+        }
+        return $body;
+    }
+
+    /**
+     * Checks a public key answer the way both the creator that sends it and
+     * the client that reads it must, returning the key and the moments it is
+     * valid from and to.
+     *
+     * The key must be a public key this library can read, a key valid to a
+     * moment must be valid from an earlier one, and where the moment asked
+     * about is known the key must have come into force by then and, if it has
+     * an end, not have ended. A creator that fails this check has a fault in
+     * its schedule or its store, and answering with a server error shows it
+     * up rather than passing it on.
+     *
+     * @return array{0: string, 1: ?DateTimeImmutable, 2: ?DateTimeImmutable}
+     * @throws OwidException where the answer is not valid.
+     */
+    public static function validatePublicKeyAnswer(mixed $answer, ?DateTimeInterface $asked): array
+    {
+        if (!is_array($answer)) {
+            throw new OwidException('the public key answer is not a JSON object');
+        }
+        $pem = $answer['publicKeySPKI'] ?? null;
+        if (!is_string($pem) || trim($pem) === '') {
+            throw new OwidException('the public key answer holds no key');
+        }
+        try {
+            Crypto::newVerifyOnly($pem);
+        } catch (OwidException $failed) {
+            throw new OwidException('the public key answer holds a key that cannot be read', 0, $failed);
+        }
+        $validFrom = self::momentOf($answer['validFrom'] ?? null, 'validFrom');
+        $validTo = self::momentOf($answer['validTo'] ?? null, 'validTo');
+        if ($validTo !== null) {
+            if ($validFrom === null) {
+                throw new OwidException('the public key answer states when the key ends but not when it started');
+            }
+            if ($validTo <= $validFrom) {
+                throw new OwidException('the public key answer states a key that ends before it starts');
+            }
+        }
+        if ($asked !== null) {
+            $moment = DateTimeImmutable::createFromInterface($asked);
+            if ($validFrom !== null && $validFrom > $moment) {
+                throw new OwidException(
+                    'the public key answer states a key that had not started at the moment asked about'
+                );
+            }
+            if ($validTo !== null && $validTo <= $moment) {
+                throw new OwidException(
+                    'the public key answer states a key that had ended at the moment asked about'
+                );
+            }
+        }
+        return [$pem, $validFrom, $validTo];
+    }
+
+    /** The moment as an RFC 3339 string in UTC, or null. */
+    private static function momentText(?DateTimeInterface $moment): ?string
+    {
+        if ($moment === null) {
+            return null;
+        }
+        return DateTimeImmutable::createFromInterface($moment)
+            ->setTimezone(new DateTimeZone('UTC'))
+            ->format('Y-m-d\TH:i:s\Z');
+    }
+
+    /**
+     * The field's value as a UTC moment, or null where it is null.
+     *
+     * @throws OwidException where it is anything else.
+     */
+    private static function momentOf(mixed $value, string $field): ?DateTimeImmutable
+    {
+        if ($value === null) {
+            return null;
+        }
+        if (!is_string($value) || preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/', $value) !== 1) {
+            throw new OwidException("the public key answer's $field is not a moment");
+        }
+        $moment = DateTimeImmutable::createFromFormat(DATE_ATOM, preg_replace('/\.\d+/', '', $value));
+        if ($moment === false) {
+            throw new OwidException("the public key answer's $field is not a moment");
+        }
+        return $moment->setTimezone(new DateTimeZone('UTC'));
     }
 
     /**
@@ -110,14 +228,16 @@ final class Endpoints
      * the latest key whose start is at or before it. A request without a
      * date, or with a date later than the moment of the request, is served
      * the key in force at that moment, so a caller cannot ask for a key whose
-     * period has not begun. The answer is 200 with the PEM, 404 with an empty
-     * body where no key is in force at the date, and 400 with an empty body
-     * where the date is not a count of minutes. The moment of the request is
-     * now, and a test may supply it.
+     * period has not begun. The answer is 200 with the JSON body from
+     * publicKeyAnswer, stating the key and the moments it is valid from and
+     * to, 404 with an empty body where no key is in force at the date, and
+     * 400 with an empty body where the date is not a count of minutes. The
+     * moment of the request is now, and a test may supply it.
      *
      * @return array{0: int, 1: string} the status code and the body
-     *
-     * @throws OwidException when the format is not spki or pkcs.
+     * @throws OwidException when the format is not spki or pkcs, or the
+     *                       answer would fail validatePublicKeyAnswer, which
+     *                       is a fault in the schedule.
      */
     public static function publicKeyResponseAt(
         PublicKeySchedule $schedule,
@@ -152,6 +272,11 @@ final class Endpoints
         if ($key === null) {
             return [404, ''];
         }
-        return [200, $key->publicKeyPem];
+        return [200, self::publicKeyAnswer(
+            $key->publicKeyPem,
+            $key->startsAt,
+            $schedule->nextStartAfter($key),
+            $asked
+        )];
     }
 }

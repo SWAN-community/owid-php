@@ -796,7 +796,7 @@ $runner->check(
 $served = [];
 $serving = function (string $url, float $timeout) use ($chosenKey, &$served): array {
     $served[] = $url;
-    return [200, $chosenKey->publicKeyPem];
+    return [200, \SwanCommunity\Owid\Endpoints::publicKeyAnswer($chosenKey->publicKeyPem, null, null, null)];
 };
 $runner->check(
     "the fetch verifies through a transport of the caller's own",
@@ -827,7 +827,10 @@ $answered = \SwanCommunity\Owid\Endpoints::publicKeyResponseAt(
 );
 $runner->check(
     'the end point answers the key in force at the date asked',
-    $answered[0] === 200 && $answered[1] === $chosenKey->publicKeyPem
+    $answered[0] === 200
+        && json_decode($answered[1], true)['publicKeySPKI'] === $chosenKey->publicKeyPem
+        && json_decode($answered[1], true)['validFrom'] === '2026-08-31T00:00:00Z'
+        && json_decode($answered[1], true)['validTo'] === '2026-09-07T00:00:00Z'
 );
 $runner->check(
     'the end point answers 404 before the schedule begins',
