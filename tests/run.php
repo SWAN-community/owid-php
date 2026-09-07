@@ -214,30 +214,13 @@ foreach (Fixtures::crossLanguage() as $lang => $fixture) {
     );
     $runner->check("$lang utf8 verifies", $utf8->verifyWithPublicKey($spki));
 
-    $root = parse($fixture['chain_root']);
-    $party = parse($fixture['chain_party']);
-    $runner->check("$lang chain root verifies alone", $root->verifyWithPublicKey($spki));
-    $runner->check(
-        "$lang chain party verifies with root",
-        $party->verifyWithPublicKey($spki, [$root])
-    );
-    $runner->check(
-        "$lang chain party fails with no others",
-        !$party->verifyWithPublicKey($spki)
-    );
-
-    foreach (['simple', 'utf8', 'chain_root'] as $key) {
+    foreach (['simple', 'utf8'] as $key) {
         $tampered = flipLastByte(parse($fixture[$key]));
         $runner->check(
             "$lang $key with flipped byte fails",
             !$tampered->verifyWithPublicKey($spki)
         );
     }
-    $tamperedParty = flipLastByte($party);
-    $runner->check(
-        "$lang chain party with flipped byte fails",
-        !$tamperedParty->verifyWithPublicKey($spki, [$root])
-    );
 }
 
 // Create and self verify, plus a tampered copy fails.
@@ -279,15 +262,6 @@ $runner->check(
     !method_exists(Creator::class, 'signString') &&
     !method_exists(Creator::class, 'signBytes')
 );
-
-// Local chain.
-$localRoot = $signer->create('root');
-$localParty = $signer->create('party', [$localRoot]);
-$runner->check(
-    'local chain party verifies with root',
-    $localParty->verifyWithCrypto($crypto, [$localRoot])
-);
-$runner->check('local chain party fails with no others', !$localParty->verifyWithCrypto($crypto));
 
 // UTF-8 payload round trip.
 $utf8Signed = $signer->create(Fixtures::UTF8_PAYLOAD);
@@ -523,26 +497,22 @@ $runner->check(
 
 // Endpoints.
 $endpointCreator = new Creator('example.com', Crypto::new());
-$body = Endpoints::creatorResponse($endpointCreator, 'Example Org', 'https://terms.example');
-$runner->check('creator response has publicKeySPKI field', str_contains($body, 'publicKeySPKI'));
-$parsedBody = json_decode($body, true);
-$runner->check('creator response domain is example.com', $parsedBody['domain'] === 'example.com');
-$runner->check('creator response name is Example Org', $parsedBody['name'] === 'Example Org');
+$spkiAnswer = json_decode(Endpoints::publicKeyResponse($endpointCreator, 'spki'), true);
 $runner->check(
-    'public key response returns PEM for spki',
-    str_contains(Endpoints::publicKeyResponse($endpointCreator, 'spki'), 'BEGIN PUBLIC KEY')
+    'public key response returns the PEM as publicKey and echoes the spki format',
+    $spkiAnswer['format'] === 'spki' && str_contains($spkiAnswer['publicKey'], 'BEGIN PUBLIC KEY')
 );
 $runner->check(
-    'public key response returns PEM for pkcs',
-    str_contains(Endpoints::publicKeyResponse($endpointCreator, 'pkcs'), 'BEGIN PUBLIC KEY')
+    'public key response reads a request with no format as spki',
+    json_decode(Endpoints::publicKeyResponse($endpointCreator), true)['format'] === 'spki'
+);
+$runner->checkThrows(
+    'public key response rejects pkcs',
+    fn () => Endpoints::publicKeyResponse($endpointCreator, 'pkcs')
 );
 $runner->checkThrows(
     'public key response rejects unknown format',
     fn () => Endpoints::publicKeyResponse($endpointCreator, 'other')
-);
-$runner->check(
-    'creator path is correct',
-    Endpoints::creatorPath(Version::Version3) === '/owid/api/v3/creator'
 );
 $runner->check(
     'public key path is correct',
@@ -790,22 +760,22 @@ $runner->check(
 $runner->check(
     'the fetch URL names the version, the minute and the well known path',
     \SwanCommunity\Owid\PublicKeyFetch::publicKeyUrl($genuine, 'https')
-        === 'https://51d.es/owid/api/v3/public-key?date=3510720&format=pkcs'
+        === 'https://51d.es/owid/api/v3/public-key?date=3510720&format=spki'
 );
 \SwanCommunity\Owid\PublicKeyFetch::clearCache();
 $served = [];
 $serving = function (string $url, float $timeout) use ($chosenKey, &$served): array {
     $served[] = $url;
-    return [200, $chosenKey->publicKeyPem];
+    return [200, \SwanCommunity\Owid\Endpoints::publicKeyAnswer($chosenKey->publicKeyPem, null, null, null)];
 };
 $runner->check(
     "the fetch verifies through a transport of the caller's own",
-    \SwanCommunity\Owid\PublicKeyFetch::signatureStatus($genuine, 'https', [], $serving)
+    \SwanCommunity\Owid\PublicKeyFetch::signatureStatus($genuine, 'https', $serving)
         === \SwanCommunity\Owid\SignatureStatus::SignatureValid
 );
 $runner->check(
     'a key already fetched is not asked for again',
-    \SwanCommunity\Owid\PublicKeyFetch::verify($genuine, 'https', [], $serving)
+    \SwanCommunity\Owid\PublicKeyFetch::verify($genuine, 'https', $serving)
         && count($served) === 1
 );
 \SwanCommunity\Owid\PublicKeyFetch::clearCache();
@@ -814,24 +784,36 @@ $runner->check(
     \SwanCommunity\Owid\PublicKeyFetch::signatureStatus(
         $genuine,
         'https',
-        [],
         fn (string $url, float $timeout): array => [404, '']
     ) === \SwanCommunity\Owid\SignatureStatus::KeyUnavailable
 );
 \SwanCommunity\Owid\PublicKeyFetch::clearCache();
 $answered = \SwanCommunity\Owid\Endpoints::publicKeyResponseAt(
     $published,
-    'pkcs',
+    'spki',
     (string) KeyFixtures::IDENTIFIER_MINUTES,
     new \DateTimeImmutable('2026-09-14T00:00:00Z')
 );
 $runner->check(
     'the end point answers the key in force at the date asked',
-    $answered[0] === 200 && $answered[1] === $chosenKey->publicKeyPem
+    $answered[0] === 200
+        && json_decode($answered[1], true)['format'] === 'spki'
+        && json_decode($answered[1], true)['publicKey'] === $chosenKey->publicKeyPem
+        && json_decode($answered[1], true)['validFrom'] === '2026-08-31T00:00:00Z'
+        && json_decode($answered[1], true)['validTo'] === '2026-09-07T00:00:00Z'
+);
+$runner->check(
+    'the end point answers 400 for a format other than spki',
+    \SwanCommunity\Owid\Endpoints::publicKeyResponseAt(
+        $published,
+        'pkcs',
+        (string) KeyFixtures::IDENTIFIER_MINUTES,
+        new \DateTimeImmutable('2026-09-14T00:00:00Z')
+    ) === [400, '']
 );
 $runner->check(
     'the end point answers 404 before the schedule begins',
-    \SwanCommunity\Owid\Endpoints::publicKeyResponseAt($published, 'pkcs', '0')[0] === 404
+    \SwanCommunity\Owid\Endpoints::publicKeyResponseAt($published, 'spki', '0')[0] === 404
 );
 
 exit($runner->summary());

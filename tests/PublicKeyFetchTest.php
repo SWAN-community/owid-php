@@ -26,6 +26,9 @@ use Exception;
 use PHPUnit\Framework\TestCase;
 use SwanCommunity\Owid\Creator;
 use SwanCommunity\Owid\Crypto;
+use SwanCommunity\Owid\DatedPublicKey;
+use SwanCommunity\Owid\Endpoints;
+use SwanCommunity\Owid\PublicKeySchedule;
 use SwanCommunity\Owid\Io;
 use SwanCommunity\Owid\Owid;
 use SwanCommunity\Owid\OwidException;
@@ -50,8 +53,8 @@ final class PublicKeyFetchTest extends TestCase
 
     protected function setUp(): void
     {
-        // Keys are held against the URL they were fetched from, and a test
-        // that counts requests has to start from nothing held.
+        // Keys are held by the creator's key end point, and a test that
+        // counts requests has to start from nothing held.
         PublicKeyFetch::clearCache();
     }
 
@@ -107,7 +110,7 @@ final class PublicKeyFetchTest extends TestCase
     {
         $this->assertSame(
             'https://51d.es/owid/api/v3/public-key?date='
-                . KeyFixtures::IDENTIFIER_MINUTES . '&format=pkcs',
+                . KeyFixtures::IDENTIFIER_MINUTES . '&format=spki',
             PublicKeyFetch::publicKeyUrl(KeyFixtures::identifier(), 'https'),
             'should ask 51d.es for the key in force on 4 September 2026'
         );
@@ -124,7 +127,7 @@ final class PublicKeyFetchTest extends TestCase
         $this->assertSame(Version::Version2, $version2->version);
         $this->assertSame(
             'https://example.com/owid/api/v2/public-key?date='
-                . KeyFixtures::IDENTIFIER_MINUTES . '&format=pkcs',
+                . KeyFixtures::IDENTIFIER_MINUTES . '&format=spki',
             PublicKeyFetch::publicKeyUrl($version2, 'https'),
             'should ask the version 2 end point'
         );
@@ -136,7 +139,7 @@ final class PublicKeyFetchTest extends TestCase
         $owid = $creator->create('payload');
         $this->assertSame(
             'https://example.com/owid/api/v3/public-key?date='
-                . Io::minutesSinceBase($owid->date) . '&format=pkcs',
+                . Io::minutesSinceBase($owid->date) . '&format=spki',
             PublicKeyFetch::publicKeyUrl($owid, 'https'),
             'should name the minute the OWID was signed'
         );
@@ -167,18 +170,20 @@ final class PublicKeyFetchTest extends TestCase
      * The same identifier against the same end point without the date, which
      * is the request a port that forgets the date makes. The end point
      * answers with the key in force at the moment of the request, ten days
-     * after the identifier was signed, the signature does not match that key,
-     * and a genuine identifier reads as a forgery.
+     * after the identifier was signed, and states a span that does not reach
+     * back to the identifier's date. The signature does not match that key,
+     * and because the creator itself says the key was not in force then, the
+     * key is reported as unavailable rather than the identifier as a forgery.
      */
     public function testUndatedFetchLeavesAnEarlierWeeksIdentifierUnverified(): void
     {
         $owid = KeyFixtures::identifier();
         $endPoint = $this->endPoint();
-        $undated = $endPoint->base . '/owid/api/v3/public-key?format=pkcs';
+        $undated = $endPoint->base . '/owid/api/v3/public-key?format=spki';
         $this->assertSame(
-            SignatureStatus::SignatureInvalid,
+            SignatureStatus::KeyUnavailable,
             PublicKeyFetch::signatureStatusAtUrl($owid, $undated),
-            'an undated request gets the key in force at the request, which did not sign it'
+            'an undated request gets the key in force at the request, which the creator says did not sign it'
         );
         $this->assertSame([null], $endPoint->dates(), 'the request carried no date');
     }
@@ -195,7 +200,7 @@ final class PublicKeyFetchTest extends TestCase
         // so the end point answers 404 the way the cloud does.
         $before = KeyFixtures::scheduledKeys()[0]['startsAt']->modify('-14 days');
         $url = $endPoint->base . '/owid/api/v3/public-key?date='
-            . Io::minutesSinceBase($before) . '&format=pkcs';
+            . Io::minutesSinceBase($before) . '&format=spki';
         $this->assertSame(
             SignatureStatus::KeyUnavailable,
             PublicKeyFetch::signatureStatusAtUrl($owid, $url),
@@ -207,7 +212,7 @@ final class PublicKeyFetchTest extends TestCase
     public function testARefusedRequestCarriesTheStatusAndTheCode(): void
     {
         $endPoint = $this->endPoint();
-        $url = $endPoint->base . '/owid/api/v3/public-key?date=0&format=pkcs';
+        $url = $endPoint->base . '/owid/api/v3/public-key?date=0&format=spki';
         try {
             PublicKeyFetch::publicKeyPemAtUrl($url, '51d.es');
             $this->fail('a date the schedule does not reach is refused');
@@ -226,7 +231,7 @@ final class PublicKeyFetchTest extends TestCase
     public function testAMalformedDateIsRefusedByTheEndPoint(): void
     {
         $endPoint = $this->endPoint();
-        $url = $endPoint->base . '/owid/api/v3/public-key?date=abc&format=pkcs';
+        $url = $endPoint->base . '/owid/api/v3/public-key?date=abc&format=spki';
         try {
             PublicKeyFetch::publicKeyPemAtUrl($url, '51d.es');
             $this->fail('a malformed date is refused');
@@ -294,10 +299,12 @@ final class PublicKeyFetchTest extends TestCase
     }
 
     /**
-     * Keys are held against the URL they came from, which names the minute,
-     * so two identifiers from different weeks fetch two different keys and a
-     * key held for one week never answers for another. A store keyed by
-     * domain alone would hand the second identifier the first one's key.
+     * Keys are held by the creator's key end point, each against the span
+     * the creator stated for it, so two identifiers from different weeks
+     * fetch two different keys and a key held for one week never answers
+     * for another.
+     * A store keyed by domain alone would hand the second identifier the
+     * first one's key.
      */
     public function testKeysAreHeldPerRequestAndNotPerDomain(): void
     {
@@ -338,18 +345,27 @@ final class PublicKeyFetchTest extends TestCase
      */
     public function testTheCacheIsBounded(): void
     {
-        $pem = KeyFixtures::schedule()->keyFor(KeyFixtures::identifier())->publicKeyPem;
         $requests = 0;
-        $counting = function (string $url, float $timeout) use ($pem, &$requests): array {
+        // Every minute is answered with a different key, which is the worst a
+        // creator can do to the cache, so the bound is on keys rather than
+        // on the minutes one key covers.
+        $counting = function (string $url, float $timeout) use (&$requests): array {
             $requests++;
-            return [200, $pem];
+            $minute = substr($url, strpos($url, 'date=') + 5);
+            $minute = substr($minute, 0, strpos($minute, '&'));
+            return [200, Endpoints::publicKeyAnswer(self::distinctPem((int) $minute), null, null, null)];
         };
         $urlFor = static fn (int $minute): string =>
-            'https://example.invalid/owid/api/v3/public-key?date=' . $minute . '&format=pkcs';
+            'https://example.invalid/owid/api/v3/public-key?date=' . $minute . '&format=spki';
         for ($minute = 1; $minute <= PublicKeyFetch::MAXIMUM_CACHED_KEYS + 1; $minute++) {
             PublicKeyFetch::publicKeyPemAtUrl($urlFor($minute), 'example.invalid', $counting);
         }
         $this->assertSame(PublicKeyFetch::MAXIMUM_CACHED_KEYS + 1, $requests);
+        $this->assertLessThanOrEqual(
+            PublicKeyFetch::MAXIMUM_CACHED_KEYS,
+            PublicKeyFetch::cachedKeyCount(),
+            'held ' . PublicKeyFetch::cachedKeyCount() . ' of at most ' . PublicKeyFetch::MAXIMUM_CACHED_KEYS
+        );
         // The arrival past the bound emptied the store, so the first URL is
         // fetched again rather than answered from what was held.
         PublicKeyFetch::publicKeyPemAtUrl($urlFor(1), 'example.invalid', $counting);
@@ -361,6 +377,471 @@ final class PublicKeyFetchTest extends TestCase
             $counting
         );
         $this->assertSame(PublicKeyFetch::MAXIMUM_CACHED_KEYS + 2, $requests);
+    }
+
+    /** A moment given as RFC 3339 text. */
+    private static function moment(string $text): DateTimeImmutable
+    {
+        return new DateTimeImmutable($text, new DateTimeZone('UTC'));
+    }
+
+    /** The PEM the fetch answers for an identifier from the fixture domain dated at the moment. */
+    private static function pemAt(KeyEndPoint $endPoint, DateTimeImmutable $moment): string
+    {
+        return PublicKeyFetch::publicKeyPemAtUrl(
+            $endPoint->urlFor(self::crafted(Version::Version3, KeyFixtures::IDENTIFIER_DOMAIN, $moment)),
+            KeyFixtures::IDENTIFIER_DOMAIN
+        );
+    }
+
+    /** The PEM the published schedule says was in force at the moment. */
+    private static function inForce(DateTimeImmutable $moment): string
+    {
+        $key = KeyFixtures::schedule()->keyInForce($moment);
+        self::assertNotNull($key);
+        return $key->publicKeyPem;
+    }
+
+    /**
+     * A key the creator has confirmed for two minutes is served for every
+     * minute between them without a request, because a key is in force from
+     * the start of its period until the next key starts. A minute outside
+     * every confirmed span is asked about.
+     */
+    public function testAMinuteBetweenTwoConfirmedMinutesIsServedFromTheCache(): void
+    {
+        $endPoint = $this->endPoint(KeyEndPoint::ANSWER_SPANLESS);
+        // The week of 31 August 2026, which the fixture identifier was signed
+        // in, and which is wholly in the past so the cache reads each minute
+        // as itself rather than as now.
+        $first = self::moment('2026-08-31T00:01:00Z');
+        $last = self::moment('2026-09-06T23:00:00Z');
+        $pem = self::pemAt($endPoint, $first);
+        $this->assertSame($pem, self::pemAt($endPoint, $last), 'one key covers the week');
+        $this->assertCount(2, $endPoint->dates(), 'the two ends of the span were asked about');
+        foreach ([$first->modify('+1 minute'), $first->modify('+3 days'), $last->modify('-1 minute')] as $between) {
+            $this->assertSame($pem, self::pemAt($endPoint, $between));
+        }
+        $this->assertCount(2, $endPoint->dates(), 'a minute between two confirmed minutes is not asked about');
+        $this->assertSame(1, PublicKeyFetch::cachedKeyCount(), 'one key is held however many minutes it covers');
+        $this->assertNotSame(
+            $pem,
+            self::pemAt($endPoint, $first->modify('-2 minutes')),
+            'a minute in the week before is the earlier week\'s key'
+        );
+        $this->assertCount(3, $endPoint->dates(), 'a minute before the span is asked about');
+        $this->assertSame(2, PublicKeyFetch::cachedKeyCount(), 'the earlier week\'s key is held as a second key');
+    }
+
+    /**
+     * The case that made the cache almost useless when it was keyed by the
+     * whole URL. A hundred identifiers with a hundred different minutes
+     * inside one key's period cost a hundred requests then. With the ends of
+     * the period confirmed they cost none.
+     */
+    public function testAHundredIdentifiersInOneConfirmedPeriodMakeNoRequest(): void
+    {
+        $endPoint = $this->endPoint(KeyEndPoint::ANSWER_SPANLESS);
+        $start = self::moment('2026-09-01T00:00:00Z');
+        self::pemAt($endPoint, $start);
+        self::pemAt($endPoint, $start->modify('+100 minutes'));
+        for ($i = 1; $i <= 100; $i++) {
+            self::pemAt($endPoint, $start->modify('+' . $i . ' minutes'));
+        }
+        $this->assertCount(
+            2,
+            $endPoint->dates(),
+            'a hundred identifiers over a hundred minutes made no request once both ends of the span were known'
+        );
+    }
+
+    /**
+     * A key is only ever served for a minute inside the span the creator has
+     * confirmed it for. Where the creator rotated between two confirmed
+     * minutes, the minutes between them belong to neither key until the
+     * creator is asked, and every answer agrees with the published schedule.
+     */
+    public function testAKeyIsNeverServedForAMinuteOutsideItsConfirmedSpan(): void
+    {
+        $endPoint = $this->endPoint(KeyEndPoint::ANSWER_SPANLESS);
+        $rotation = self::moment('2026-08-31T00:00:00Z');
+        // The start of the week before the rotation and the end of the week
+        // after it, so the two keys are held with the rotation between.
+        self::pemAt($endPoint, $rotation->modify('-7 days'));
+        self::pemAt($endPoint, $rotation->modify('+7 days -1 minute'));
+        $this->assertCount(2, $endPoint->dates());
+        $this->assertSame(2, PublicKeyFetch::cachedKeyCount());
+
+        // Every minute across the rotation, in an order that walks in from
+        // both sides, is answered with the key the schedule gives, whether
+        // from the cache or by asking.
+        $offsets = ['-1 minute', '+0 minutes', '-2 minutes', '+1 minute', '-84 hours', '+84 hours',
+            '-3 minutes', '+2 minutes', '-1 minute', '+0 minutes'];
+        foreach ($offsets as $offset) {
+            $moment = $rotation->modify($offset);
+            $this->assertSame(
+                self::inForce($moment),
+                self::pemAt($endPoint, $moment),
+                'the key served for ' . $moment->format(DATE_ATOM)
+            );
+        }
+        $this->assertSame(2, PublicKeyFetch::cachedKeyCount(), 'two keys are held, each with its own span');
+        $asked = count($endPoint->dates());
+        $this->assertTrue(
+            $asked > 2 && $asked < 2 + count($offsets),
+            'some minutes were asked about and some were served: ' . $asked
+        );
+
+        // The minute either side of the rotation is now confirmed, so nothing
+        // across the whole fortnight needs asking.
+        for ($moment = $rotation->modify('-7 days'); $moment < $rotation->modify('+7 days'); $moment = $moment->modify('+1 hour')) {
+            $this->assertSame(
+                self::inForce($moment),
+                self::pemAt($endPoint, $moment),
+                'the key served for ' . $moment->format(DATE_ATOM)
+            );
+        }
+        $this->assertCount($asked, $endPoint->dates(), 'both spans are fully confirmed, so nothing was asked');
+    }
+
+    /**
+     * A minute within the clock drift allowance of now, or later, is asked
+     * about every time and never held, because a creator whose clock differs
+     * from this one's may have read it as its present rather than as the
+     * minute named. A minute beyond the allowance is held as usual.
+     */
+    public function testAMinuteWithinTheDriftAllowanceIsNotHeld(): void
+    {
+        $endPoint = $this->endPoint(KeyEndPoint::ANSWER_SPANLESS);
+        $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $started = Io::minutesSinceBase($now);
+        $recent = $now->modify('-1 minute');
+        self::pemAt($endPoint, $recent);
+        self::pemAt($endPoint, $recent);
+        self::pemAt($endPoint, $now->modify('+7 days'));
+        PublicKeyFetch::publicKeyPemAtUrl(
+            $endPoint->base . '/owid/api/v3/public-key?format=spki',
+            KeyFixtures::IDENTIFIER_DOMAIN
+        );
+        $old = $now->modify('-' . (PublicKeyFetch::CLOCK_DRIFT_ALLOWANCE_MINUTES + 1) . ' minutes');
+        self::pemAt($endPoint, $old);
+        self::pemAt($endPoint, $old);
+        if (Io::minutesSinceBase(new DateTimeImmutable('now', new DateTimeZone('UTC'))) !== $started) {
+            $this->markTestSkipped('the minute changed during the test, so the calls were not all about the same now');
+        }
+        $this->assertCount(
+            5,
+            $endPoint->dates(),
+            'the recent minute was asked about twice, the future minute and the request with no date once each, '
+                . 'and the old minute once with the second call held'
+        );
+        $this->assertSame(1, PublicKeyFetch::cachedKeyCount(), 'only the old minute\'s key is held');
+    }
+
+    /** A real public key for every value, made once and kept. */
+    private static array $distinctKeys = [];
+
+    private static function distinctPem(int $value): string
+    {
+        if (!isset(self::$distinctKeys[$value])) {
+            self::$distinctKeys[$value] = Crypto::new()->publicKeyPem();
+        }
+        return self::$distinctKeys[$value];
+    }
+
+    /**
+     * An identifier for the domain dated at the moment and signed with the
+     * crypto given, standing for one whose signing machine's clock did not
+     * agree with the creator's schedule to the minute.
+     */
+    private static function signedAt(string $domain, DateTimeImmutable $moment, Crypto $crypto): Owid
+    {
+        $data = '';
+        Io::writeByte($data, Version::Version3->asByte());
+        Io::writeString($data, $domain);
+        Io::writeDate($data, $moment, Version::Version3);
+        Io::writeByteArray($data, 'payload');
+        $buffer = $data;
+        Io::writeSignature($buffer, $crypto->signByteArray($data));
+        $result = Owid::tryFromByteArray($buffer);
+        self::assertTrue($result->ok, $result->status->value);
+        self::assertNotNull($result->owid);
+        return $result->owid;
+    }
+
+    /**
+     * A creator that states the moments the key is valid from and to, which
+     * is what the library's own server side helper answers, has the whole
+     * span held from that one answer, so every other minute of the span is
+     * served without a request.
+     */
+    public function testAKeyAnsweredWithItsSpanIsHeldForTheWholeSpan(): void
+    {
+        $endPoint = $this->endPoint();
+        $pem = self::pemAt($endPoint, self::moment('2026-08-31T00:01:00Z'));
+        foreach (['2026-09-06T23:59:00Z', '2026-09-03T12:00:00Z', '2026-08-31T00:00:00Z'] as $moment) {
+            $this->assertSame($pem, self::pemAt($endPoint, self::moment($moment)), $moment);
+        }
+        $this->assertCount(1, $endPoint->dates(), 'the whole week was held from one answer');
+        $this->assertSame(1, PublicKeyFetch::cachedKeyCount());
+        $before = self::pemAt($endPoint, self::moment('2026-08-30T23:59:00Z'));
+        $this->assertNotSame($pem, $before, 'the minute before the week is the earlier week\'s key');
+        self::pemAt($endPoint, self::moment('2026-08-24T00:00:00Z'));
+        $this->assertCount(2, $endPoint->dates(), 'the earlier week was held from its one answer');
+    }
+
+    /**
+     * The drift allowance, which keeps minutes near now out of a cache built
+     * from confirmed minutes, does not apply to a span the creator stated
+     * itself, so live identifiers cost one request per key rather than one
+     * per minute.
+     */
+    public function testARecentMinuteIsServedWhereTheCreatorStatedTheSpan(): void
+    {
+        $endPoint = $this->endPoint();
+        $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $current = KeyFixtures::schedule()->keyInForce($now);
+        if ($current === null || KeyFixtures::schedule()->nextStartAfter($current) === null) {
+            $this->markTestSkipped('the fixture schedule has no key after the one in force now');
+        }
+        self::pemAt($endPoint, $now->modify('-1 minute'));
+        self::pemAt($endPoint, $now);
+        self::pemAt($endPoint, $now->modify('-10 minutes'));
+        $this->assertCount(1, $endPoint->dates(), 'the current key was served for every recent minute from one answer');
+    }
+
+    /**
+     * An identifier dated just after a key started, but signed with the key
+     * before it, verifies, and one dated just before a key started but signed
+     * with it verifies too, because the neighbouring key is tried when the
+     * selected key fails within the drift allowance of the span's edge.
+     * Further from the edge the failure stands. The stand in creator answers
+     * with the library's own server side helper, so the loop between the two
+     * halves of the library is closed.
+     */
+    public function testASignatureFailingNearTheEdgeOfASpanIsCheckedAgainstTheNeighbour(): void
+    {
+        $first = Crypto::new();
+        $second = Crypto::new();
+        $third = Crypto::new();
+        $rotation = self::moment('2026-08-31T00:00:00Z');
+        $schedule = PublicKeySchedule::of([
+            DatedPublicKey::of($rotation->modify('-7 days'), $first->publicKeyPem()),
+            DatedPublicKey::of($rotation, $second->publicKeyPem()),
+            DatedPublicKey::of($rotation->modify('+7 days'), $third->publicKeyPem()),
+        ]);
+        $requests = [];
+        $creator = function (string $url, float $timeout) use ($schedule, &$requests): array {
+            $requests[] = $url;
+            $parameters = [];
+            parse_str((string) parse_url($url, PHP_URL_QUERY), $parameters);
+            return Endpoints::publicKeyResponseAt($schedule, $parameters['format'] ?? null, $parameters['date'] ?? null);
+        };
+        $statusOf = fn (Owid $owid): SignatureStatus => PublicKeyFetch::signatureStatusAtUrl(
+            $owid,
+            'https://creator.test/owid/api/v3/public-key?date=' . Io::minutesSinceBase($owid->date) . '&format=spki',
+            $creator
+        );
+        $late = self::signedAt('creator.test', $rotation->modify('+5 minutes'), $first);
+        $this->assertSame(SignatureStatus::SignatureValid, $statusOf($late), 'signed with the earlier key just after the rotation');
+        $this->assertCount(2, $requests, 'the selected key and then the earlier key were asked for');
+        $early = self::signedAt('creator.test', $rotation->modify('-5 minutes'), $second);
+        $this->assertSame(SignatureStatus::SignatureValid, $statusOf($early), 'signed with the later key just before the rotation');
+        $this->assertCount(2, $requests, 'both keys are held with their spans');
+        $far = self::signedAt('creator.test', $rotation->modify('+20 minutes'), $first);
+        $this->assertSame(SignatureStatus::SignatureInvalid, $statusOf($far), 'well inside the later key\'s span');
+        $this->assertCount(2, $requests, 'the identifier is further from every edge than clocks may differ');
+        $genuine = self::signedAt('creator.test', $rotation->modify('+3 days'), $second);
+        $this->assertSame(SignatureStatus::SignatureValid, $statusOf($genuine));
+        $forged = self::signedAt('creator.test', $rotation->modify('+3 days'), $third);
+        $this->assertSame(SignatureStatus::SignatureInvalid, $statusOf($forged), 'signed with a key not in force at its date');
+    }
+
+    /**
+     * A transport standing in for a creator that answers each date from the
+     * schedule with the span of the key chosen, recording the date of every
+     * request. The moment the creator reads as now is fixed so that a request
+     * without a date, or with one in the future, is answered the same way on
+     * every run.
+     *
+     * @param array<int, ?string> $asked
+     */
+    private static function creatorOf(PublicKeySchedule $schedule, array &$asked): callable
+    {
+        return function (string $url, float $timeout) use ($schedule, &$asked): array {
+            $parameters = [];
+            parse_str((string) parse_url($url, PHP_URL_QUERY), $parameters);
+            $date = $parameters['date'] ?? null;
+            $asked[] = is_string($date) ? $date : null;
+            return Endpoints::publicKeyResponseAt(
+                $schedule,
+                $parameters['format'] ?? null,
+                $date,
+                self::moment('2026-09-14T00:00:00Z')
+            );
+        };
+    }
+
+    /** The URL the fetch would use for the identifier at the stand in creator. */
+    private static function urlOf(Owid $owid): string
+    {
+        return 'https://creator.test/owid/api/v3/public-key?date=' . Io::minutesSinceBase($owid->date) . '&format=spki';
+    }
+
+    /**
+     * The neighbouring key is asked for by the minute just beyond the edge of
+     * the span the creator stated, not by a minute a fixed distance from the
+     * identifier, so a key in force for less than the drift allowance is
+     * still the one tried.
+     */
+    public function testTheNeighbourIsAskedForByTheMinuteJustBeyondTheEdge(): void
+    {
+        $first = Crypto::new();
+        $second = Crypto::new();
+        $rotation = self::moment('2026-08-31T00:00:00Z');
+        $schedule = PublicKeySchedule::of([
+            DatedPublicKey::of($rotation->modify('-7 days'), $first->publicKeyPem()),
+            DatedPublicKey::of($rotation, $second->publicKeyPem()),
+            DatedPublicKey::of($rotation->modify('+7 days'), Crypto::new()->publicKeyPem()),
+        ]);
+        $asked = [];
+        $creator = self::creatorOf($schedule, $asked);
+        $late = self::signedAt('creator.test', $rotation->modify('+5 minutes'), $first);
+        $this->assertSame(
+            SignatureStatus::SignatureValid,
+            PublicKeyFetch::signatureStatusAtUrl($late, self::urlOf($late), $creator)
+        );
+        $rotationMinute = Io::minutesSinceBase($rotation);
+        $this->assertSame(
+            [(string) ($rotationMinute + 5), (string) ($rotationMinute - 1)],
+            $asked,
+            'the identifier\'s own minute and then the minute just before the span started'
+        );
+    }
+
+    /**
+     * A key the creator states a start for and no end is in force until
+     * further notice as far as the creator has said, so a live identifier
+     * dated just after that start which does not verify under it is checked
+     * against the key before it, even though the cache holds the key only up
+     * to the drift allowance behind now.
+     */
+    public function testAKeyStatedWithoutAnEndHasNoLaterEdge(): void
+    {
+        $first = Crypto::new();
+        $second = Crypto::new();
+        $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $rotation = $now->modify('-5 minutes');
+        $schedule = PublicKeySchedule::of([
+            DatedPublicKey::of($rotation->modify('-7 days'), $first->publicKeyPem()),
+            DatedPublicKey::of($rotation, $second->publicKeyPem()),
+        ]);
+        $requests = 0;
+        $creator = function (string $url, float $timeout) use ($schedule, &$requests): array {
+            $requests++;
+            $parameters = [];
+            parse_str((string) parse_url($url, PHP_URL_QUERY), $parameters);
+            return Endpoints::publicKeyResponseAt($schedule, $parameters['format'] ?? null, $parameters['date'] ?? null);
+        };
+        $live = self::signedAt('creator.test', $rotation->modify('+2 minutes'), $first);
+        $this->assertSame(
+            SignatureStatus::SignatureValid,
+            PublicKeyFetch::signatureStatusAtUrl($live, self::urlOf($live), $creator),
+            'a live identifier signed with the key before the current one verifies'
+        );
+        $this->assertSame(2, $requests, 'the current key and then the key before it were asked for');
+    }
+
+    /**
+     * A creator whose own statement puts the identifier's date outside the
+     * span of the key it answered with has said that key did not sign at
+     * that date, so nothing verifying under it leaves the key unavailable
+     * rather than the signature not matching. A forgery dated inside the
+     * span is still reported as not matching.
+     */
+    public function testAKeyTheCreatorSaysWasNotInForceLeavesTheSignatureUnjudged(): void
+    {
+        $first = Crypto::new();
+        $second = Crypto::new();
+        $stranger = Crypto::new();
+        $rotation = self::moment('2026-08-31T00:00:00Z');
+        // A creator that ignores the date asked about and answers with the
+        // current key and its span whatever the request.
+        $ignoring = static fn (string $url, float $timeout): array => [200, Endpoints::publicKeyAnswer(
+            $second->publicKeyPem(),
+            $rotation,
+            $rotation->modify('+7 days'),
+            null
+        )];
+        $earlier = self::signedAt('creator.test', $rotation->modify('-3 days'), $first);
+        $this->assertSame(
+            SignatureStatus::KeyUnavailable,
+            PublicKeyFetch::signatureStatusAtUrl($earlier, self::urlOf($earlier), $ignoring),
+            'the key answered with was not in force at the identifier\'s date'
+        );
+        $this->assertFalse(PublicKeyFetch::verify($earlier, 'https', $ignoring));
+        $forged = self::signedAt('creator.test', $rotation->modify('+3 days'), $stranger);
+        $this->assertSame(
+            SignatureStatus::SignatureInvalid,
+            PublicKeyFetch::signatureStatusAtUrl($forged, self::urlOf($forged), $ignoring),
+            'a signature failing under the key in force at its date does not match'
+        );
+    }
+
+    /**
+     * The PEM alone as text is reported as a key this library cannot read rather than used, and so is a span that ends before it starts.
+     */
+    public function testAnAnswerThatIsNotTheJsonFormIsAKeyThatCannotBeRead(): void
+    {
+        $endPoint = $this->endPoint(KeyEndPoint::ANSWER_PEM_ONLY);
+        $owid = KeyFixtures::identifier();
+        $this->assertSame(
+            SignatureStatus::InvalidKey,
+            PublicKeyFetch::signatureStatusAtUrl($owid, $endPoint->urlFor($owid))
+        );
+        $contradictory = static fn (string $url, float $timeout): array => [200, json_encode([
+            'format' => 'spki',
+            'publicKey' => KeyFixtures::schedule()->keys()[0]->publicKeyPem,
+            'validFrom' => '2026-08-31T00:00:00Z',
+            'validTo' => '2026-08-24T00:00:00Z',
+        ])];
+        $this->assertSame(
+            SignatureStatus::InvalidKey,
+            PublicKeyFetch::signatureStatusAtUrl($owid, $endPoint->urlFor($owid), $contradictory)
+        );
+    }
+
+    /**
+     * An answer that states a format other than spki carries a key in an
+     * encoding this library does not read, and is reported as a key that
+     * cannot be read rather than parsed as if it were spki.
+     */
+    public function testAnAnswerStatingAnotherFormatIsAKeyThatCannotBeRead(): void
+    {
+        $owid = KeyFixtures::identifier();
+        $pem = KeyFixtures::schedule()->keyFor($owid)->publicKeyPem;
+        $otherFormat = static fn (string $url, float $timeout): array => [200, json_encode([
+            'format' => 'pkcs',
+            'publicKey' => $pem,
+            'validFrom' => null,
+            'validTo' => null,
+        ])];
+        $this->assertSame(
+            SignatureStatus::InvalidKey,
+            PublicKeyFetch::signatureStatus($owid, 'https', $otherFormat),
+            'the key is the right one, but the answer says it is not in the encoding asked for'
+        );
+        $stated = static fn (string $url, float $timeout): array => [200, json_encode([
+            'format' => 'spki',
+            'publicKey' => $pem,
+            'validFrom' => null,
+            'validTo' => null,
+        ])];
+        $this->assertSame(
+            SignatureStatus::SignatureValid,
+            PublicKeyFetch::signatureStatus($owid, 'https', $stated),
+            'the same key stated as spki is read'
+        );
     }
 
     /**
@@ -396,7 +877,7 @@ final class PublicKeyFetchTest extends TestCase
         };
         $this->assertSame(
             SignatureStatus::KeyUnavailable,
-            PublicKeyFetch::signatureStatus($owid, 'https', [], $noRequest)
+            PublicKeyFetch::signatureStatus($owid, 'https', $noRequest)
         );
     }
 
@@ -452,13 +933,13 @@ final class PublicKeyFetchTest extends TestCase
         $calls = [];
         $transport = function (string $url, float $timeout) use ($pem, &$calls): array {
             $calls[] = [$url, $timeout];
-            return [200, $pem];
+            return [200, Endpoints::publicKeyAnswer($pem, null, null, null)];
         };
         $this->assertSame(
             SignatureStatus::SignatureValid,
-            PublicKeyFetch::signatureStatus($owid, 'https', [], $transport)
+            PublicKeyFetch::signatureStatus($owid, 'https', $transport)
         );
-        $this->assertTrue(PublicKeyFetch::verify($owid, 'https', [], $transport));
+        $this->assertTrue(PublicKeyFetch::verify($owid, 'https', $transport));
         $this->assertSame(
             [[PublicKeyFetch::publicKeyUrl($owid, 'https'), PublicKeyFetch::TIMEOUT_SECONDS]],
             $calls,
@@ -466,6 +947,11 @@ final class PublicKeyFetchTest extends TestCase
         );
     }
 
+    /**
+     * A creator that states no span and answers with a key other than the
+     * one that signed the identifier is reported as a signature that does
+     * not match, and verify answers false for it.
+     */
     public function testVerifyAnswersTrueOnlyForAGenuineSignature(): void
     {
         $owid = KeyFixtures::identifier();
@@ -474,11 +960,14 @@ final class PublicKeyFetchTest extends TestCase
         $signing = $schedule->keyFor($owid);
         $this->assertNotNull($signing);
         $following = $keys[array_search($signing, $keys, true) + 1];
-        $wrongWeek = static fn (string $url, float $timeout): array => [200, $following->publicKeyPem];
-        $this->assertFalse(
-            PublicKeyFetch::verify($owid, 'https', [], $wrongWeek),
+        $wrongWeek = static fn (string $url, float $timeout): array =>
+            [200, Endpoints::publicKeyAnswer($following->publicKeyPem, null, null, null)];
+        $this->assertSame(
+            SignatureStatus::SignatureInvalid,
+            PublicKeyFetch::signatureStatus($owid, 'https', $wrongWeek),
             "the following week's key did not sign the identifier"
         );
+        $this->assertFalse(PublicKeyFetch::verify($owid, 'https', $wrongWeek));
     }
 
     public function testATransportThatThrowsIsKeyUnavailable(): void
@@ -489,7 +978,7 @@ final class PublicKeyFetchTest extends TestCase
         };
         $this->assertSame(
             SignatureStatus::KeyUnavailable,
-            PublicKeyFetch::signatureStatus($owid, 'https', [], $unreachable)
+            PublicKeyFetch::signatureStatus($owid, 'https', $unreachable)
         );
     }
 
@@ -500,7 +989,7 @@ final class PublicKeyFetchTest extends TestCase
         $badly = static fn (string $url, float $timeout): array => ['200', 'not a pair'];
         $this->assertSame(
             SignatureStatus::KeyUnavailable,
-            PublicKeyFetch::signatureStatus($owid, 'https', [], $badly)
+            PublicKeyFetch::signatureStatus($owid, 'https', $badly)
         );
     }
 
@@ -520,7 +1009,7 @@ final class PublicKeyFetchTest extends TestCase
         PublicKeyFetch::clearCache();
         $this->assertSame(
             SignatureStatus::KeyUnavailable,
-            PublicKeyFetch::signatureStatus($owid, 'https', [], $oversized)
+            PublicKeyFetch::signatureStatus($owid, 'https', $oversized)
         );
     }
 }

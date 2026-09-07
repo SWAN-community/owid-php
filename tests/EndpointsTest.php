@@ -38,48 +38,40 @@ final class EndpointsTest extends TestCase
     }
 
     /**
-     * The creator end point body contains the JSON fields named in the
-     * specification.
-     */
-    public function testCreatorResponseFields(): void
-    {
-        $creator = $this->newCreator();
-        $body = Endpoints::creatorResponse($creator, 'Example Org', 'https://terms.example');
-        $this->assertStringContainsString('publicKeySPKI', $body);
-        $this->assertStringContainsString('contractURL', $body);
-        $parsed = json_decode($body, true);
-        $this->assertIsArray($parsed);
-        $this->assertSame('example.com', $parsed['domain']);
-        $this->assertSame('Example Org', $parsed['name']);
-        $this->assertSame('https://terms.example', $parsed['contractURL']);
-        $this->assertStringContainsString('BEGIN PUBLIC KEY', $parsed['publicKeySPKI']);
-    }
-
-    /**
-     * The public key end point returns the PEM for the valid formats and
-     * rejects unknown formats.
+     * The public key end point answers the key as publicKey in the spki
+     * format, which is echoed and which a request naming no format receives,
+     * and refuses every other format, pkcs among them.
      */
     public function testPublicKeyResponseFormats(): void
     {
         $creator = $this->newCreator();
-        foreach (['spki', 'pkcs'] as $format) {
+        foreach (['spki', null, ''] as $format) {
             $body = Endpoints::publicKeyResponse($creator, $format);
+            $answer = json_decode($body, true);
+            $this->assertSame('spki', $answer['format'], 'the format is echoed, and taken as spki where absent');
             $this->assertStringContainsString(
                 'BEGIN PUBLIC KEY',
-                $body,
-                "should return the PEM for format $format"
+                $answer['publicKey'],
+                'should return the PEM as publicKey'
             );
+            $this->assertNull($answer['validFrom'], 'a single key has no schedule');
+            $this->assertNull($answer['validTo']);
         }
-        $this->expectException(OwidException::class);
-        Endpoints::publicKeyResponse($creator, 'other');
+        foreach (['pkcs', 'other', 'SPKI'] as $format) {
+            try {
+                Endpoints::publicKeyResponse($creator, $format);
+                $this->fail("format $format should be refused");
+            } catch (OwidException $refused) {
+                $this->assertStringContainsString('spki', $refused->getMessage());
+            }
+        }
     }
 
     /**
-     * The paths match the well known end points in the specification.
+     * The path matches the well known end point in the specification.
      */
     public function testPaths(): void
     {
-        $this->assertSame('/owid/api/v3/creator', Endpoints::creatorPath(Version::Version3));
         $this->assertSame('/owid/api/v3/public-key', Endpoints::publicKeyPath(Version::Version3));
     }
 }

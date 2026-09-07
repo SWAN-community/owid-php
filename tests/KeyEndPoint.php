@@ -56,6 +56,10 @@ final class KeyEndPoint
 
     /** The published schedule, chosen by the date requested. */
     public const ANSWER_SCHEDULE = 'schedule';
+    /** The key alone as JSON with no moments, as a creator with one key and no schedule answers. */
+    public const ANSWER_SPANLESS = 'spanless';
+    /** The key alone as text, which the specification does not allow. */
+    public const ANSWER_PEM_ONLY = 'pem-only';
 
     /** Text shaped like a PEM that no key can be read out of. */
     public const ANSWER_BROKEN_KEY = 'broken-key';

@@ -43,8 +43,7 @@ final class CrossLanguageTest extends TestCase
     }
 
     /**
-     * The simple payload OWID verifies with no others and exposes the ASCII
-     * payload.
+     * The simple payload OWID verifies and exposes the ASCII payload.
      *
      * @param array<string, string> $fixture
      *
@@ -82,34 +81,6 @@ final class CrossLanguageTest extends TestCase
     }
 
     /**
-     * The chain root verifies alone, the chain party verifies with the root as
-     * the single other, and the party fails with no others.
-     *
-     * @param array<string, string> $fixture
-     *
-     * @dataProvider languages
-     */
-    public function testChainVerifies(string $name, array $fixture): void
-    {
-        $root = Fixtures::parseBase64($fixture['chain_root']);
-        $party = Fixtures::parseBase64($fixture['chain_party']);
-        $this->assertSame('root', $root->payloadAsString());
-        $this->assertSame('party', $party->payloadAsString());
-        $this->assertTrue(
-            $root->verifyWithPublicKey($fixture['spki']),
-            "$name chain root should verify alone"
-        );
-        $this->assertTrue(
-            $party->verifyWithPublicKey($fixture['spki'], [$root]),
-            "$name chain party should verify with the root"
-        );
-        $this->assertFalse(
-            $party->verifyWithPublicKey($fixture['spki']),
-            "$name chain party should fail with no others"
-        );
-    }
-
-    /**
      * Each fixture with its last signature byte flipped fails to verify.
      *
      * @param array<string, string> $fixture
@@ -118,8 +89,7 @@ final class CrossLanguageTest extends TestCase
      */
     public function testTamperedFixturesFail(string $name, array $fixture): void
     {
-        $root = Fixtures::parseBase64($fixture['chain_root']);
-        foreach (['simple', 'utf8', 'chain_root'] as $key) {
+        foreach (['simple', 'utf8'] as $key) {
             $owid = Fixtures::parseBase64($fixture[$key]);
             $tampered = self::flipLastByte($owid);
             $this->assertFalse(
@@ -127,12 +97,6 @@ final class CrossLanguageTest extends TestCase
                 "$name $key with a flipped byte should fail"
             );
         }
-        $party = Fixtures::parseBase64($fixture['chain_party']);
-        $tamperedParty = self::flipLastByte($party);
-        $this->assertFalse(
-            $tamperedParty->verifyWithPublicKey($fixture['spki'], [$root]),
-            "$name chain party with a flipped byte should fail"
-        );
     }
 
     /**

@@ -8,8 +8,7 @@ PHP. This library creates, signs, serializes, and verifies OWIDs.
 ## Overview
 
 An OWID records that the entity operating a domain captured or generated a
-payload at a date and time, with an ECDSA signature over the OWID and any
-other OWIDs it was signed together with. OWIDs chain to form verifiable trees.
+payload at a date and time, with an ECDSA signature over the OWID's own bytes.
 The cryptography is ECDSA on the NIST P-256 curve (also known as secp256r1 or
 prime256v1) with the SHA-256 hash.
 
@@ -31,7 +30,6 @@ It covers:
 
 - Reading and writing the OWID binary wire format, byte exact across versions.
 - Signing and verifying with ECDSA P-256 and SHA-256.
-- Building and verifying chains of OWIDs.
 - Framework agnostic helpers for the well known end points a creator hosts.
 - Fetching the public key of another creator for the date an OWID carries,
   and choosing a key out of a published schedule.
@@ -128,17 +126,6 @@ if ($result->ok) {
 }
 ```
 
-Chain OWIDs by creating one that covers others. The same others, in the same
-order, must be supplied when verifying.
-
-```php
-$root = $creator->create('root');
-$party = $creator->create('party', [$root]);
-
-// Verifying the party requires the root as the single other.
-$party->verifyWithPublicKey($crypto->publicKeyPem(), [$root]);
-```
-
 Where the difference between a signature that does not match and a check that
 could not be made changes what your code should do, ask for the status instead
 of a true or false answer. A key that cannot be read is reported as a fault in
@@ -167,16 +154,42 @@ anything older than a few days means asking for the key that was in force on
 the date the identifier carries.
 
 `PublicKeyFetch` asks the creator for that key. The request is
-`/owid/api/v{n}/public-key?date={minutes}&format=pkcs`, where the version in
+`/owid/api/v{n}/public-key?date={minutes}&format=spki`, where the version in
 the path is the version byte of the identifier being checked and the minutes
 are counted from 2020-01-01 in the same way the identifier stores its date. A
-creator that ignores the parameter returns its current key, so every
-identifier it signed under an earlier key reads as not matching, which is why
-a creator that rotates its key has to honour the date. Keys already fetched
-are held against the URL they came from, which names the domain, the version
-and the minute, up to 1024 of them before the store is emptied, and
-`PublicKeyFetch::clearCache` empties it on demand. Each request waits at most
-ten seconds.
+creator that ignores the parameter answers with its current key, and where its
+own statement of that key's span puts the identifier's date outside it the key
+is reported as unavailable rather than the signature as not matching, so every
+identifier it signed under an earlier key goes unverified, which is why a
+creator that rotates its key has to honour the date.
+
+Keys fetched from a creator are held in memory. The request names the minute
+the identifier was created, so a creator that rotates its key answers with the
+key in force then, and the answer is the JSON form, which carries the moments
+the key is valid from and to as well as the key. A creator built on this
+library states both, so the whole span is held from one answer and an
+identifier dated anywhere in it is verified without a request whatever the
+clock drift. An answer that states the start alone is held from the start up to
+fifteen minutes behind now, because no later key can have started before then.
+An answer that states no span comes from a creator with one key and no
+schedule, and is held against the minute asked about and every minute between
+two such answers for the same key, but never for a minute within fifteen
+minutes of now, because a creator whose clock differs from this one's may have
+read that minute as its present rather than as the minute named. The PEM alone
+as text is not a valid answer and is refused. A signature that does not verify
+under the key selected, where the identifier is dated within fifteen minutes of
+an edge of the span the creator stated for that key, is checked against the key
+for the minute just beyond that edge before it is reported as not matching,
+because a creator's signing machines may not agree with its schedule to the
+minute. Where the creator's own statement puts the identifier's date outside
+the span of the key it answered with and nothing verifies, the key is reported
+as unavailable rather than the signature as not matching, because a key that
+was not in force proves nothing about the identifier. Live identifiers from a
+creator that states its spans cost one request per key, and older ones cost
+none. At most 1024 keys are held across every creator before the store is
+emptied and filled again, and `PublicKeyFetch::clearCache` empties it on
+demand, which is how a long running process drops a key it has learned it
+should no longer trust. Each request waits at most ten seconds.
 
 ```php
 use SwanCommunity\Owid\PublicKeyFetch;
@@ -191,7 +204,7 @@ $remote = $remoteCreator->create('from another creator');
 $unreachable = static function (string $url, float $timeout): array {
     throw new \RuntimeException('this example makes no request');
 };
-$fetched = PublicKeyFetch::signatureStatus($remote, 'https', [], $unreachable);
+$fetched = PublicKeyFetch::signatureStatus($remote, 'https', $unreachable);
 if ($fetched === SignatureStatus::KeyUnavailable) {
     // The key could not be obtained, so the signature was never examined.
     // Only SignatureInvalid means the identifier should be distrusted.
@@ -239,6 +252,12 @@ key end point with `Endpoints::publicKeyResponseAt`, which returns the status
 code and body for the request: the key in force at the date asked, the key in
 force now for a request without a date or with a date later than now, 404
 where no key is in force, and 400 where the date is not a count of minutes.
+The answer is a JSON object with four fields. `format` is the encoding of the
+key, `publicKey` is the key in that encoding, and `validFrom` and `validTo`
+are the UTC moments the key came into force and the next key starts. The only
+format defined is `spki`, a Subject Public Key Info PEM. It is what a request
+without a `format` parameter receives, and a request for any other value is
+answered 400 rather than in an encoding the caller did not ask for.
 
 ## How an OWID comes into existence
 
@@ -339,8 +358,8 @@ The public classes live in the `SwanCommunity\Owid` namespace.
   - `payloadAsString` returns the raw payload bytes, `payloadAsPrintable`
     returns lower case zero padded hexadecimal, `payloadAsBase64` returns the
     padded base 64 form.
-  - `verifyWithCrypto`, `verifyWithPublicKey` answer true or false for the OWID
-    and any others it was signed with.
+  - `verifyWithCrypto`, `verifyWithPublicKey` answer true or false for the
+    OWID.
   - `signatureStatus`, `signatureStatusWithCrypto` answer with a
     `SignatureStatus`, which keeps a signature that does not match apart from a
     check that could not be made.
@@ -359,7 +378,7 @@ The public classes live in the `SwanCommunity\Owid` namespace.
     raw bytes.
   - `publicKeyPem`, `privateKeyPem` export the keys as PEM.
 - `Creator` binds a domain to a signing `Crypto`.
-  - `create($payload, $others = [])` creates and signs a new OWID in one call.
+  - `create($payload)` creates and signs a new OWID in one call.
     A PHP string is a byte array, so the payload may be text or raw bytes.
 - `Endpoints` returns the path and body strings for the well known end points
   without binding to any web framework.
@@ -419,10 +438,8 @@ followed by the 32 byte big endian s value. The openssl extension produces and
 consumes ASN.1 DER signatures, so this library converts between the DER form
 and the raw form when signing and verifying.
 
-The data covered by the signature is this OWID without its signature, followed
-by the complete bytes, including the signature, of each other OWID in the
-order given. To verify, the same others must be supplied in the same order as
-when signing.
+The data covered by the signature is this OWID without its signature and
+nothing else.
 
 Although the in memory date may carry more precision, the serialized form is
 minutes since the base date, so signing and verification both operate on the
@@ -431,7 +448,7 @@ minute truncated value.
 ## Testing
 
 The test suite exercises the canonical wire vectors, the cross language signed
-fixtures with their chain and tamper assertions, the signing path, and unit
+fixtures with their tamper assertions, the signing path, and unit
 tests for the crypto, creator, io, and end point helpers.
 `tests/PublicKeyFetchTest.php` drives the real fetch against a stand in for a
 creator's public key end point, being PHP's built in web server on the

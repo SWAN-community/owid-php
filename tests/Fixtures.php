@@ -100,8 +100,8 @@ final class Fixtures
 
     /**
      * Returns the cross language fixtures keyed by implementation name. Each
-     * entry has the SPKI public key PEM and the simple, utf8, chain_party and
-     * chain_root base 64 OWIDs.
+     * entry has the SPKI public key PEM and the simple and utf8 base 64
+     * OWIDs.
      *
      * @return array<string, array<string, string>>
      */
@@ -123,14 +123,6 @@ final class Fixtures
                     'A2dvLnN3YW4tZGVtby51awA/vTMAFgAAAFrDvHJpY2gg4p2kIE9XSUQgwqPi' .
                     'gqzxY+4QgUGt84xC9HxHmHXDt+wcB0Y9a6E+Txm2F147Qacbp0CtrF8x7QC' .
                     'WZfkcKCKNGSM8hYZEfYjJtViG+tA+',
-                'chain_party' =>
-                    'A2dvLnN3YW4tZGVtby51awA/vTMABQAAAHBhcnR5l7NyNmFw2lxqc4DKJWoq' .
-                    '0UVd5ujGV/+fvVxqYTRlwCFxaSuwvnhLQQHjX5spxWb4O08IeuiuGCat1WF' .
-                    'B/Wqlyw==',
-                'chain_root' =>
-                    'A2dvLnN3YW4tZGVtby51awA/vTMABAAAAHJvb3R/bEqzG8gAy9yTF1UMEtOl' .
-                    'YXBBmn3a20jxXq5NmxIC8iuZvduOXKMf+K8VoAapkWwfpoDKQHS09Ihljas' .
-                    'ZqC0k',
             ],
             'dotnet' => [
                 'domain' => 'dotnet.swan-demo.uk',
@@ -147,14 +139,6 @@ final class Fixtures
                     'A2RvdG5ldC5zd2FuLWRlbW8udWsAPb0zABYAAABaw7xyaWNoIOKdpCBPV0lE' .
                     'IMKj4oKsVuaeaDUej0sF+cHfYj/icDBmlBLOviC6ZE28am8EtY+IGuesFcg' .
                     '2rKMybcsAxMmnrDtF2xsk1cJvHgoIYpSJJQ==',
-                'chain_party' =>
-                    'A2RvdG5ldC5zd2FuLWRlbW8udWsAPb0zAAUAAABwYXJ0eXtD6H4R7GbvRyFU' .
-                    '+bCKgjMAZFFm8KHln80XPwQOBb/Ub9EZfE4Ml3ueRkKX51+MD98RFgTSmjb' .
-                    'qrAnzFkLlilA=',
-                'chain_root' =>
-                    'A2RvdG5ldC5zd2FuLWRlbW8udWsAPb0zAAQAAAByb290fErj2LccPYCduWUW' .
-                    '8vY2aBjrecDfnTpVpv3+SESJMFW5pcuPKEQik2rC0fWEoB5Vr6e0k5inrhU' .
-                    'GiF2c2Y2YDw==',
             ],
             'rust' => [
                 'domain' => 'rust.swan-demo.uk',
@@ -171,14 +155,6 @@ final class Fixtures
                     'A3J1c3Quc3dhbi1kZW1vLnVrAD69MwAWAAAAWsO8cmljaCDinaQgT1dJRCDC' .
                     'o+KCrDHenDds+W587AzXpBb94gmLOloeBJTlHnjCkez4Dz2yAPtjcoQ6M/ZU' .
                     'WDIobtJHE5n9a81pTsn/Kvi74Azzx4s=',
-                'chain_party' =>
-                    'A3J1c3Quc3dhbi1kZW1vLnVrAD69MwAFAAAAcGFydHmJ7qaxWgIZUHmGOQb2' .
-                    'xC+RuZNwrkMmo1SA9/MfI4SoEpRYdnteXAKUQXxTOK3lmQ3Qz3UwBB6gBb3' .
-                    'Q8hi1Wx0R',
-                'chain_root' =>
-                    'A3J1c3Quc3dhbi1kZW1vLnVrAD69MwAEAAAAcm9vdFd0+QLaBLGPyBrQO+VN' .
-                    'unBIQZzw8/lhEiDOKTx36Dc93A0n0fzPDMt/C+BdWMqhnL4nVvyurb3IHR7' .
-                    'DUAmgmO0=',
             ],
         ];
     }

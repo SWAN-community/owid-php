@@ -141,14 +141,13 @@ class OwidException extends Exception
     }
 
     /**
-     * The format parameter for the public key end point was not one of the
-     * valid values "spki" or "pkcs".
+     * The format parameter for the public key end point was not the one
+     * encoding defined, "spki".
      */
     public static function invalidKeyFormat(string $format): self
     {
         return new self(
-            "format parameter 'spki' or 'pkcs' must be provided, " .
-            "received '$format'"
+            "the only format defined is 'spki', received '$format'"
         );
     }
 }

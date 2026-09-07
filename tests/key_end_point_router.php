@@ -26,6 +26,7 @@ declare(strict_types=1);
 
 require __DIR__ . '/../vendor/autoload.php';
 
+use SwanCommunity\Owid\Endpoints;
 use SwanCommunity\Owid\Io;
 use SwanCommunity\Owid\Tests\KeyEndPoint;
 use SwanCommunity\Owid\Tests\KeyFixtures;
@@ -51,11 +52,14 @@ if ($answer === KeyEndPoint::ANSWER_REDIRECT) {
 }
 
 if ($answer === KeyEndPoint::ANSWER_BROKEN_KEY) {
-    // Shaped like a PEM, with a body no key can be read out of. This is the
-    // 30 August 2026 fault, where the end points served PEM a strict parser
-    // refused and good identifiers went unverified.
-    header('Content-Type: text/plain');
-    echo "-----BEGIN PUBLIC KEY-----\nbm90IGEga2V5\n-----END PUBLIC KEY-----\n";
+    // Shaped like a PEM, with a body no key can be read out of. It is sent as the JSON form without the check a creator applies, because that check is what catches it.
+    header('Content-Type: application/json');
+    echo json_encode([
+        'format' => 'spki',
+        'publicKey' => "-----BEGIN PUBLIC KEY-----\nbm90IGEga2V5\n-----END PUBLIC KEY-----\n",
+        'validFrom' => null,
+        'validTo' => null,
+    ]);
     return;
 }
 
@@ -77,5 +81,20 @@ if ($key === null) {
     http_response_code(404);
     return;
 }
-header('Content-Type: text/plain');
-echo $key->publicKeyPem;
+if ($answer === KeyEndPoint::ANSWER_PEM_ONLY) {
+    header('Content-Type: text/plain');
+    echo $key->publicKeyPem;
+    return;
+}
+header('Content-Type: application/json');
+if ($answer === KeyEndPoint::ANSWER_SPANLESS) {
+    echo Endpoints::publicKeyAnswer($key->publicKeyPem, null, null, null);
+    return;
+}
+// The answer the library's own server side helper builds, so the client is
+// tested against what a creator built on it sends, with the format the
+// request asked for passed through so the request the client makes is the
+// one judged.
+[$status, $body] = Endpoints::publicKeyResponseAt(KeyFixtures::schedule(), $_GET['format'] ?? null, $date, $moment);
+http_response_code($status);
+echo $body;

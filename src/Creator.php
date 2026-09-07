@@ -92,7 +92,7 @@ final class Creator
 
     /**
      * Creates and signs a new OWID for this creator carrying the payload
-     * given, and covering any others given.
+     * given. The signature covers the OWID's own bytes and nothing else.
      *
      * This is the only way to make an OWID, and it makes a finished one. The
      * creator owns the version, the domain, the date and the signature, so a
@@ -104,14 +104,11 @@ final class Creator
      * A PHP string is a byte array, so the payload may be text or raw bytes
      * and there is one method rather than a pair.
      *
-     * @param array<int, Owid> $others covered by the signature, and required
-     *                                 in the same order when verifying
-     *
      * @throws OwidException when the fields can not be encoded or the signing
      *                       operation fails.
      */
-    public function create(string $payload, array $others = []): Owid
+    public function create(string $payload): Owid
     {
-        return Owid::createSignedBy($this, $payload, $others);
+        return Owid::createSignedBy($this, $payload);
     }
 }
