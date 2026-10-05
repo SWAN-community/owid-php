@@ -63,6 +63,12 @@ if ($answer === KeyEndPoint::ANSWER_BROKEN_KEY) {
     return;
 }
 
+if ($answer === KeyEndPoint::ANSWER_BODY) {
+    header('Content-Type: application/json');
+    echo (string) getenv('OWID_KEY_BODY');
+    return;
+}
+
 $moment = KeyEndPoint::requestMoment();
 $asked = $moment;
 if ($date !== null) {

@@ -67,6 +67,12 @@ final class KeyEndPoint
     /** A redirect to a host that is not the creator, which a client must not follow. */
     public const ANSWER_REDIRECT = 'redirect';
 
+    /**
+     * The body passed to start, whatever date is requested, so a test can
+     * state the answer itself.
+     */
+    public const ANSWER_BODY = 'body';
+
     /** The value the router records for a request that carried no date. */
     public const NO_DATE = '-';
 
@@ -92,9 +98,9 @@ final class KeyEndPoint
 
     /**
      * Starts an end point serving what the answer says, and waits until it
-     * accepts connections.
+     * accepts connections. The body is what ANSWER_BODY serves.
      */
-    public static function start(string $answer = self::ANSWER_SCHEDULE): self
+    public static function start(string $answer = self::ANSWER_SCHEDULE, string $body = ''): self
     {
         $port = self::freePort();
         $log = tempnam(sys_get_temp_dir(), 'owid-key-end-point-');
@@ -109,6 +115,7 @@ final class KeyEndPoint
         ];
         $environment = getenv();
         $environment['OWID_KEY_ANSWER'] = $answer;
+        $environment['OWID_KEY_BODY'] = $body;
         $environment['OWID_KEY_LOG'] = $log;
         $process = proc_open(
             [PHP_BINARY, '-S', '127.0.0.1:' . $port, __DIR__ . '/key_end_point_router.php'],
