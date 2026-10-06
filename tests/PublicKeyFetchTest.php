@@ -68,9 +68,9 @@ final class PublicKeyFetchTest extends TestCase
     }
 
     /** Starts a stand in end point and stops it when the test ends. */
-    private function endPoint(string $answer = KeyEndPoint::ANSWER_SCHEDULE): KeyEndPoint
+    private function endPoint(string $answer = KeyEndPoint::ANSWER_SCHEDULE, string $body = ''): KeyEndPoint
     {
-        $endPoint = KeyEndPoint::start($answer);
+        $endPoint = KeyEndPoint::start($answer, $body);
         $this->started[] = $endPoint;
         return $endPoint;
     }
@@ -598,12 +598,18 @@ final class PublicKeyFetchTest extends TestCase
      */
     public function testARecentMinuteIsServedWhereTheCreatorStatedTheSpan(): void
     {
-        $endPoint = $this->endPoint();
         $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-        $current = KeyFixtures::schedule()->keyInForce($now);
-        if ($current === null || KeyFixtures::schedule()->nextStartAfter($current) === null) {
-            $this->markTestSkipped('the fixture schedule has no key after the one in force now');
-        }
+        $started = Io::minutesSinceBase($now);
+        $day = 24 * 60;
+        // The creator states one key for the day either side of now, so every
+        // minute asked about lies inside the stated span.
+        $body = Endpoints::publicKeyAnswer(
+            KeyFixtures::schedule()->keys()[0]->publicKeyPem,
+            Io::baseDate()->modify('+' . ($started - $day) . ' minutes'),
+            Io::baseDate()->modify('+' . ($started + $day) . ' minutes'),
+            null
+        );
+        $endPoint = $this->endPoint(KeyEndPoint::ANSWER_BODY, $body);
         self::pemAt($endPoint, $now->modify('-1 minute'));
         self::pemAt($endPoint, $now);
         self::pemAt($endPoint, $now->modify('-10 minutes'));
